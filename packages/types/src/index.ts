@@ -223,12 +223,14 @@ export interface Floor {
   floorNumber: number;
   name: string;
   description?: string;
+  rooms?: Room[];
 }
 
 export interface BedType {
   id: string;
   name: string; // King, Queen, Twin, Single, Sofa Bed
   capacity: number;
+  rooms?: Room[];
 }
 
 export interface RoomType {
@@ -244,6 +246,8 @@ export interface RoomType {
   amenities: string[];
   images: string[];
   isActive: boolean;
+  ratePlans?: RatePlan[];
+  roomsCount?: number;
 }
 
 export interface Room {
@@ -259,6 +263,7 @@ export interface Room {
   floor?: Floor;
   roomType?: RoomType;
   bedType?: BedType;
+  bookings?: any[];
   createdAt?: string;
   updatedAt?: string;
 }
@@ -276,6 +281,7 @@ export interface RatePlan {
   extraAdultRate: number;
   extraChildRate: number;
   isActive: boolean;
+  roomType?: RoomType;
 }
 
 export interface GuestIdentity {

@@ -9,6 +9,11 @@ import {
   validateInternationalGuest,
   validateIdentityDocument,
   calculateBookingSubtotal,
+  calculateEffectiveDailyRate,
+  calculateExtraGuestCharges,
+  calculateMealPlanCharges,
+  calculateDiscount,
+  calculateTaxableAmount,
   formatINR,
   numberToIndianWords,
   maskAadhaar,
@@ -214,5 +219,86 @@ describe("MODULE 5 — Room Rate & Calculation Engine", () => {
     expect(result.totalDiscount).toBe(500);
     expect(result.taxableAmount).toBe(15900);
     expect(result.nights.length).toBe(3);
+  });
+
+  it("calculates effective daily rate with all components", () => {
+    const result = calculateEffectiveDailyRate({
+      basePlanRate: 5000,
+      seasonalMultiplier: 1.2,
+      weekendMultiplier: 1.15,
+      extraAdults: 2,
+      extraChildren: 1,
+      extraAdultRatePerNight: 1000,
+      extraChildRatePerNight: 500,
+      isWeekend: true,
+    });
+    // roomBaseNightly = 5000 * 1.2 * 1.15 = 5000 * 1.38 = 6900
+    expect(result.roomBaseNightly).toBe(6900);
+    expect(result.extraAdultCharges).toBe(2000);
+    expect(result.extraChildCharges).toBe(500);
+    expect(result.totalDailyRate).toBe(9400);
+  });
+
+  it("calculates extra guest charges over multiple nights", () => {
+    const total = calculateExtraGuestCharges(2, 800, 1, 400, 3);
+    // adults: 2*800*3=4800, children: 1*400*3=1200, total 6000
+    expect(total).toBe(6000);
+  });
+
+  it("calculates meal plan charges", () => {
+    const total = calculateMealPlanCharges(1200, 3, 2); // 1200 * 3 * 2 = 7200
+    expect(total).toBe(7200);
+  });
+
+  it("calculates discount with both percent and flat", () => {
+    const discount = calculateDiscount(10000, 10, 500); // 1000 + 500 = 1500
+    expect(discount).toBe(1500);
+  });
+
+  it("calculates taxable amount after discount", () => {
+    const taxable = calculateTaxableAmount(10000, 1500);
+    expect(taxable).toBe(8500);
+  });
+
+  it("supports seasonal pricing variations", () => {
+    const result = calculateBookingSubtotal({
+      basePlanRate: 3000,
+      seasonalMultiplier: 1.5,
+      weekendMultiplier: 1.0,
+      checkInDate: "2026-11-01",
+      checkOutDate: "2026-11-03", // 2 nights, Mon/Tue
+    });
+    expect(result.totalNights).toBe(2);
+    expect(result.roomSubtotal).toBe(9000); // 3000 * 1.5 * 2
+  });
+
+  it("handles meal plans in calculation", () => {
+    const result = calculateBookingSubtotal({
+      basePlanRate: 2000,
+      seasonalMultiplier: 1.0,
+      weekendMultiplier: 1.0,
+      mealPlanRatePerPersonPerNight: 800,
+      adultCount: 2,
+      childCount: 0,
+      checkInDate: "2026-10-13",
+      checkOutDate: "2026-10-15", // 2 nights
+    });
+    expect(result.totalNights).toBe(2);
+    expect(result.roomSubtotal).toBe(4000);
+    expect(result.mealPlanCharges).toBe(3200); // 800 * 2 * 2
+    expect(result.taxableAmount).toBe(7200);
+  });
+
+  it("handles extra children charges", () => {
+    const result = calculateBookingSubtotal({
+      basePlanRate: 3000,
+      seasonalMultiplier: 1.0,
+      weekendMultiplier: 1.0,
+      extraChildren: 2,
+      extraChildRatePerNight: 600,
+      checkInDate: "2026-10-13",
+      checkOutDate: "2026-10-16", // 3 nights
+    });
+    expect(result.extraGuestCharges).toBe(3600); // 2 * 600 * 3
   });
 });

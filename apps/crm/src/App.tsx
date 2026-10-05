@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Hotel,
   Calendar,
@@ -12,11 +12,32 @@ import {
   ArrowRightLeft,
   FileText,
   CheckCircle2,
+  BedDouble,
 } from "lucide-react";
 import { Button, Card, RoomStatusBadge, Modal, Input } from "@hotel/ui";
 import { formatINR, maskAadhaar, isValidGSTIN, numberToIndianWords } from "@hotel/utils";
 import { DEFAULT_HOTEL_INFO, SAC_CODES } from "@hotel/config";
-import type { RoomStatus, LeadStatus } from "@hotel/types";
+import type { RoomStatus, LeadStatus, Room, RoomType, RatePlan, Floor, BedType } from "@hotel/types";
+import { RoomInventoryView } from "./components/rooms/RoomInventoryView";
+import {
+  fetchRoomsApi,
+  fetchRoomTypesApi,
+  fetchRatePlansApi,
+  fetchFloorsApi,
+  fetchBedTypesApi,
+  createRoomApi,
+  updateRoomApi,
+  deleteRoomApi,
+  updateRoomStatusApi,
+  bulkUpdateRoomStatusApi,
+  createRoomTypeApi,
+  createRatePlanApi,
+  INITIAL_ROOMS_DATA,
+  INITIAL_ROOM_TYPES,
+  INITIAL_RATE_PLANS,
+  INITIAL_FLOORS,
+  INITIAL_BED_TYPES,
+} from "./services/roomApi";
 
 // Operational inventory
 const INITIAL_ROOMS: Array<{
@@ -40,10 +61,166 @@ const INITIAL_ROOMS: Array<{
 ];
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<"tape-chart" | "folios" | "crm" | "loyalty" | "night-audit" | "reports">("tape-chart");
+  const [activeTab, setActiveTab] = useState<"rooms-inventory" | "tape-chart" | "folios" | "crm" | "loyalty" | "night-audit" | "reports">("rooms-inventory");
   const [rooms, setRooms] = useState(INITIAL_ROOMS);
   const [searchFilter, setSearchFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("ALL");
+
+  // Room Catalog & Inventory Real DB State
+  const [inventoryRooms, setInventoryRooms] = useState<Room[]>(INITIAL_ROOMS_DATA);
+  const [roomTypes, setRoomTypes] = useState<RoomType[]>(INITIAL_ROOM_TYPES);
+  const [ratePlans, setRatePlans] = useState<RatePlan[]>(INITIAL_RATE_PLANS);
+  const [floors, setFloors] = useState<Floor[]>(INITIAL_FLOORS);
+  const [bedTypes, setBedTypes] = useState<BedType[]>(INITIAL_BED_TYPES);
+  const [isInventoryLoading, setIsInventoryLoading] = useState(false);
+
+  // Fetch real data on mount
+  useEffect(() => {
+    loadAllInventoryData();
+  }, []);
+
+  const loadAllInventoryData = async () => {
+    setIsInventoryLoading(true);
+    try {
+      const [fetchedRooms, fetchedTypes, fetchedPlans, fetchedFloors, fetchedBeds] = await Promise.all([
+        fetchRoomsApi(),
+        fetchRoomTypesApi(),
+        fetchRatePlansApi(),
+        fetchFloorsApi(),
+        fetchBedTypesApi(),
+      ]);
+      setInventoryRooms(fetchedRooms);
+      setRoomTypes(fetchedTypes);
+      setRatePlans(fetchedPlans);
+      setFloors(fetchedFloors);
+      setBedTypes(fetchedBeds);
+
+      // Keep tape-chart rooms in sync with inventory
+      setRooms(
+        fetchedRooms.map((r) => {
+          const type = fetchedTypes.find((t) => t.id === r.roomTypeId);
+          const floor = fetchedFloors.find((f) => f.id === r.floorId);
+          return {
+            roomNumber: r.roomNumber,
+            roomType: type?.name || "Standard",
+            floor: floor ? `Floor ${floor.floorNumber}` : "Floor 1",
+            status: r.status,
+            rate: r.baseRate || type?.basePrice || 4200,
+          };
+        }),
+      );
+    } catch (_err) {
+      // Keep initial fallback
+    } finally {
+      setIsInventoryLoading(false);
+    }
+  };
+
+  // CRUD Handlers for Room Catalog & Inventory Module
+  const handleAddRoom = async (roomData: Partial<Room>) => {
+    const created = await createRoomApi(roomData);
+    setInventoryRooms((prev) => [...prev, created]);
+    const type = roomTypes.find((t) => t.id === created.roomTypeId);
+    const floor = floors.find((f) => f.id === created.floorId);
+    setRooms((prev) => [
+      ...prev,
+      {
+        roomNumber: created.roomNumber,
+        roomType: type?.name || "Standard",
+        floor: floor ? `Floor ${floor.floorNumber}` : "Floor 1",
+        status: created.status,
+        rate: created.baseRate || type?.basePrice || 4200,
+      },
+    ]);
+  };
+
+  const handleUpdateRoom = async (id: string, updates: Partial<Room>) => {
+    const updated = await updateRoomApi(id, updates);
+    setInventoryRooms((prev) => prev.map((r) => (r.id === id ? { ...r, ...updated, ...updates } : r)));
+    if (updates.status || updates.roomNumber || updates.baseRate) {
+      setRooms((prev) =>
+        prev.map((r) => {
+          const matched = inventoryRooms.find((ir) => ir.id === id);
+          if (matched && r.roomNumber === matched.roomNumber) {
+            return {
+              ...r,
+              roomNumber: updates.roomNumber || r.roomNumber,
+              status: updates.status || r.status,
+              rate: updates.baseRate || r.rate,
+            };
+          }
+          return r;
+        }),
+      );
+    }
+  };
+
+  const handleDeleteRoom = async (id: string) => {
+    await deleteRoomApi(id);
+    setInventoryRooms((prev) => prev.map((r) => (r.id === id ? { ...r, isActive: false } : r)));
+  };
+
+  const handleStatusChange = async (roomId: string, newStatus: RoomStatus) => {
+    await updateRoomStatusApi(roomId, newStatus);
+    setInventoryRooms((prev) => prev.map((r) => (r.id === roomId ? { ...r, status: newStatus } : r)));
+    const targetRoom = inventoryRooms.find((r) => r.id === roomId);
+    if (targetRoom) {
+      setRooms((prev) =>
+        prev.map((r) => (r.roomNumber === targetRoom.roomNumber ? { ...r, status: newStatus } : r)),
+      );
+    }
+  };
+
+  const handleBulkStatusChange = async (roomIds: string[], newStatus: RoomStatus) => {
+    await bulkUpdateRoomStatusApi(roomIds, newStatus);
+    setInventoryRooms((prev) =>
+      prev.map((r) => (roomIds.includes(r.id) ? { ...r, status: newStatus } : r)),
+    );
+    const affectedNumbers = inventoryRooms
+      .filter((r) => roomIds.includes(r.id))
+      .map((r) => r.roomNumber);
+    setRooms((prev) =>
+      prev.map((r) => (affectedNumbers.includes(r.roomNumber) ? { ...r, status: newStatus } : r)),
+    );
+  };
+
+  const handleAddRoomType = async (typeData: Partial<RoomType>) => {
+    const created = await createRoomTypeApi(typeData);
+    setRoomTypes((prev) => [...prev, created]);
+  };
+
+  const handleUpdateRoomType = async (id: string, updates: Partial<RoomType>) => {
+    setRoomTypes((prev) => prev.map((t) => (t.id === id ? { ...t, ...updates } : t)));
+  };
+
+  const handleAddRatePlan = async (planData: Partial<RatePlan>) => {
+    const created = await createRatePlanApi(planData);
+    setRatePlans((prev) => [...prev, created]);
+  };
+
+  const handleUpdateRatePlan = async (id: string, updates: Partial<RatePlan>) => {
+    setRatePlans((prev) => prev.map((p) => (p.id === id ? { ...p, ...updates } : p)));
+  };
+
+  const handleAddFloor = async (floorData: Partial<Floor>) => {
+    const newFloor: Floor = {
+      id: `fl-${Date.now()}`,
+      hotelId: "hotel-1",
+      floorNumber: floorData.floorNumber || floors.length + 1,
+      name: floorData.name || `Floor ${floors.length + 1}`,
+      description: floorData.description,
+    };
+    setFloors((prev) => [...prev, newFloor]);
+  };
+
+  const handleAddBedType = async (bedData: Partial<BedType>) => {
+    const newBed: BedType = {
+      id: `bed-${Date.now()}`,
+      name: bedData.name || "Double",
+      capacity: bedData.capacity || 2,
+    };
+    setBedTypes((prev) => [...prev, newBed]);
+  };
 
   // Quick Check-in modal state
   const [isCheckInOpen, setIsCheckInOpen] = useState(false);
@@ -230,6 +407,20 @@ export default function App() {
         {/* Sidebar */}
         <aside className="w-64 bg-slate-950 border-r border-slate-800/80 p-4 flex flex-col gap-1.5 shrink-0">
           <p className="text-[10px] font-bold text-slate-500 tracking-wider uppercase px-3 py-1">
+            Room Inventory & Catalog
+          </p>
+          <button
+            onClick={() => setActiveTab("rooms-inventory")}
+            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-semibold transition-all ${
+              activeTab === "rooms-inventory"
+                ? "bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20 font-bold"
+                : "text-slate-400 hover:text-white hover:bg-slate-800/60"
+            }`}
+          >
+            <BedDouble className="w-4 h-4" /> Room Catalog & Inventory
+          </button>
+
+          <p className="text-[10px] font-bold text-slate-500 tracking-wider uppercase px-3 py-1 mt-3">
             PMS Operations
           </p>
           <button
@@ -304,46 +495,72 @@ export default function App() {
 
         {/* Content Area */}
         <main className="flex-1 overflow-y-auto bg-slate-900 p-6 space-y-6">
-          {/* Executive KPI Cards */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <Card className="bg-slate-950/70 border-slate-800 p-4">
-              <p className="text-xs font-semibold text-slate-400">Today's Occupancy</p>
-              <div className="flex items-baseline justify-between mt-2">
-                <span className="text-2xl font-black text-white">{occupancyPct}%</span>
-                <span className="text-xs text-amber-400 font-semibold">{occupiedCount} / {totalRooms} Rooms</span>
-              </div>
-              <div className="w-full bg-slate-800 h-1.5 rounded-full mt-3 overflow-hidden">
-                <div className="bg-amber-500 h-full rounded-full transition-all duration-500" style={{ width: `${occupancyPct}%` }} />
-              </div>
-            </Card>
+          {/* TAB 0: MODULE 4 - ROOM CATALOG & INVENTORY */}
+          {activeTab === "rooms-inventory" && (
+            <RoomInventoryView
+              rooms={inventoryRooms}
+              roomTypes={roomTypes}
+              ratePlans={ratePlans}
+              floors={floors}
+              bedTypes={bedTypes}
+              isLoading={isInventoryLoading}
+              onRefresh={loadAllInventoryData}
+              onAddRoom={handleAddRoom}
+              onUpdateRoom={handleUpdateRoom}
+              onDeleteRoom={handleDeleteRoom}
+              onStatusChange={handleStatusChange}
+              onBulkStatusChange={handleBulkStatusChange}
+              onAddRoomType={handleAddRoomType}
+              onUpdateRoomType={handleUpdateRoomType}
+              onAddRatePlan={handleAddRatePlan}
+              onUpdateRatePlan={handleUpdateRatePlan}
+              onAddFloor={handleAddFloor}
+              onAddBedType={handleAddBedType}
+            />
+          )}
 
-            <Card className="bg-slate-950/70 border-slate-800 p-4">
-              <p className="text-xs font-semibold text-slate-400">Available / Clean</p>
-              <div className="flex items-baseline justify-between mt-2">
-                <span className="text-2xl font-black text-emerald-400">{availableCount}</span>
-                <span className="text-xs text-slate-400">Ready for guest</span>
-              </div>
-              <p className="text-[11px] text-slate-500 mt-3">{dirtyCount} dirty • {maintenanceCount} blocked</p>
-            </Card>
+          {/* Executive KPI Cards (for Tape-chart and other operations tabs) */}
+          {activeTab !== "rooms-inventory" && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <Card className="bg-slate-950/70 border-slate-800 p-4">
+                <p className="text-xs font-semibold text-slate-400">Today's Occupancy</p>
+                <div className="flex items-baseline justify-between mt-2">
+                  <span className="text-2xl font-black text-white">{occupancyPct}%</span>
+                  <span className="text-xs text-amber-400 font-semibold">{occupiedCount} / {totalRooms} Rooms</span>
+                </div>
+                <div className="w-full bg-slate-800 h-1.5 rounded-full mt-3 overflow-hidden">
+                  <div className="bg-amber-500 h-full rounded-full transition-all duration-500" style={{ width: `${occupancyPct}%` }} />
+                </div>
+              </Card>
 
-            <Card className="bg-slate-950/70 border-slate-800 p-4">
-              <p className="text-xs font-semibold text-slate-400">Average Daily Rate (ADR)</p>
-              <div className="flex items-baseline justify-between mt-2">
-                <span className="text-2xl font-black text-white">{formatINR(9500)}</span>
-                <span className="text-xs text-emerald-400 font-medium">+12% vs LY</span>
-              </div>
-              <p className="text-[11px] text-slate-500 mt-3">Total room revenue / occupied</p>
-            </Card>
+              <Card className="bg-slate-950/70 border-slate-800 p-4">
+                <p className="text-xs font-semibold text-slate-400">Available / Clean</p>
+                <div className="flex items-baseline justify-between mt-2">
+                  <span className="text-2xl font-black text-emerald-400">{availableCount}</span>
+                  <span className="text-xs text-slate-400">Ready for guest</span>
+                </div>
+                <p className="text-[11px] text-slate-500 mt-3">{dirtyCount} dirty • {maintenanceCount} blocked</p>
+              </Card>
 
-            <Card className="bg-slate-950/70 border-slate-800 p-4">
-              <p className="text-xs font-semibold text-slate-400">RevPAR (Indian Rupee)</p>
-              <div className="flex items-baseline justify-between mt-2">
-                <span className="text-2xl font-black text-amber-400">{formatINR(1900)}</span>
-                <span className="text-xs text-slate-400">ADR * Occupancy %</span>
-              </div>
-              <p className="text-[11px] text-slate-500 mt-3">Statutory metric</p>
-            </Card>
-          </div>
+              <Card className="bg-slate-950/70 border-slate-800 p-4">
+                <p className="text-xs font-semibold text-slate-400">Average Daily Rate (ADR)</p>
+                <div className="flex items-baseline justify-between mt-2">
+                  <span className="text-2xl font-black text-white">{formatINR(9500)}</span>
+                  <span className="text-xs text-emerald-400 font-medium">+12% vs LY</span>
+                </div>
+                <p className="text-[11px] text-slate-500 mt-3">Total room revenue / occupied</p>
+              </Card>
+
+              <Card className="bg-slate-950/70 border-slate-800 p-4">
+                <p className="text-xs font-semibold text-slate-400">RevPAR (Indian Rupee)</p>
+                <div className="flex items-baseline justify-between mt-2">
+                  <span className="text-2xl font-black text-amber-400">{formatINR(1900)}</span>
+                  <span className="text-xs text-slate-400">ADR * Occupancy %</span>
+                </div>
+                <p className="text-[11px] text-slate-500 mt-3">Statutory metric</p>
+              </Card>
+            </div>
+          )}
 
           {/* TAB 1: TAPE CHART / ROOM GRID */}
           {activeTab === "tape-chart" && (
