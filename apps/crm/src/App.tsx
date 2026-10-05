@@ -19,6 +19,7 @@ import { formatINR, maskAadhaar, isValidGSTIN, numberToIndianWords } from "@hote
 import { DEFAULT_HOTEL_INFO, SAC_CODES } from "@hotel/config";
 import type { RoomStatus, LeadStatus, Room, RoomType, RatePlan, Floor, BedType } from "@hotel/types";
 import { RoomInventoryView } from "./components/rooms/RoomInventoryView";
+import { NightAuditConsole } from "./components/nightAudit/NightAuditConsole";
 import {
   fetchRoomsApi,
   fetchRoomTypesApi,
@@ -240,8 +241,6 @@ export default function App() {
 
   // Night Audit state
   const [currentBusinessDate, setCurrentBusinessDate] = useState("2026-10-05");
-  const [isAuditing, setIsAuditing] = useState(false);
-  const [auditSuccess, setAuditSuccess] = useState(false);
 
   // CRM Leads state
   const [leads, setLeads] = useState([
@@ -320,16 +319,7 @@ export default function App() {
     }, 2000);
   };
 
-  const handleRunNightAudit = () => {
-    setIsAuditing(true);
-    setTimeout(() => {
-      setIsAuditing(false);
-      setAuditSuccess(true);
-      const nextDay = new Date(currentBusinessDate);
-      nextDay.setDate(nextDay.getDate() + 1);
-      setCurrentBusinessDate(nextDay.toISOString().split("T")[0]!);
-    }, 1800);
-  };
+
 
   const handleConvertLead = (leadId: string) => {
     setLeads((prev) =>
@@ -856,57 +846,11 @@ export default function App() {
 
           {/* TAB 5: NIGHT AUDIT & FLASH REPORT */}
           {activeTab === "night-audit" && (
-            <div className="space-y-6">
-              <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-6 space-y-5">
-                <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-                  <div>
-                    <h2 className="text-lg font-bold text-white flex items-center gap-2">
-                      <Moon className="w-5 h-5 text-amber-400" />
-                      Night Audit & Business Date Close
-                    </h2>
-                    <p className="text-xs text-slate-400 mt-0.5">
-                      Rolls the hotel business date, posts daily room charges, and generates statutory Flash Report
-                    </p>
-                  </div>
-
-                  <Button
-                    variant="gold"
-                    size="sm"
-                    disabled={isAuditing}
-                    onClick={handleRunNightAudit}
-                  >
-                    {isAuditing ? "Processing EOD Audit..." : `Close Business Date (${currentBusinessDate})`}
-                  </Button>
-                </div>
-
-                {auditSuccess && (
-                  <div className="p-4 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-semibold rounded-lg flex items-center gap-2">
-                    <CheckCircle2 className="w-5 h-5" />
-                    Night Audit completed successfully! Business date advanced. Flash Report generated below.
-                  </div>
-                )}
-
-                {/* Flash Report Metrics */}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  <div className="bg-slate-900 p-4 rounded-xl border border-slate-800">
-                    <p className="text-[11px] text-slate-400">Audited Occupancy</p>
-                    <p className="text-xl font-black text-white mt-1">{occupancyPct}%</p>
-                  </div>
-                  <div className="bg-slate-900 p-4 rounded-xl border border-slate-800">
-                    <p className="text-[11px] text-slate-400">Total Room Revenue (INR)</p>
-                    <p className="text-xl font-black text-amber-400 mt-1">{formatINR(19000)}</p>
-                  </div>
-                  <div className="bg-slate-900 p-4 rounded-xl border border-slate-800">
-                    <p className="text-[11px] text-slate-400">GST Collected (12% / 18%)</p>
-                    <p className="text-xl font-black text-white mt-1">{formatINR(3030)}</p>
-                  </div>
-                  <div className="bg-slate-900 p-4 rounded-xl border border-slate-800">
-                    <p className="text-[11px] text-slate-400">ADR (Occupied Rooms)</p>
-                    <p className="text-xl font-black text-emerald-400 mt-1">{formatINR(9500)}</p>
-                  </div>
-                </div>
-              </div>
-            </div>
+            <NightAuditConsole
+              currentBusinessDate={currentBusinessDate}
+              onBusinessDateAdvanced={(nextDate) => setCurrentBusinessDate(nextDate)}
+              rooms={inventoryRooms}
+            />
           )}
 
           {/* TAB 6: REPORTS & STATUTORY COMPLIANCE */}

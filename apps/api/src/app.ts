@@ -49,10 +49,11 @@ app.use("/api/night-audit", nightAuditRouter);
 app.use("/api/reports", reportsRouter);
 app.use("/api/audit-logs", auditLogsRouter);
 
-// Direct root aliases (to satisfy GET /rooms, GET /room-types, GET /rate-plans specs)
+// Direct root aliases (to satisfy GET /rooms, GET /room-types, GET /rate-plans, etc.)
 app.use("/rooms", roomsRouter);
 app.use("/room-types", roomTypesRouter);
 app.use("/rate-plans", ratePlansRouter);
+app.use("/night-audit", nightAuditRouter);
 
 // Centralized error handler
 app.use(errorHandler);
