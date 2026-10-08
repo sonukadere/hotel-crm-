@@ -5,7 +5,8 @@
     "moduleResolution": "NodeNext",
     "outDir": "./dist",
     "declaration": false,
-    "declarationMap": false
+    "declarationMap": false,
+    "noUncheckedIndexedAccess": false
   },
   "include": ["src/**/*"]
 }

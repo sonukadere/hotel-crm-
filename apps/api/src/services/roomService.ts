@@ -462,6 +462,59 @@ export async function updateRoomType(
   };
 }
 
+export async function getRoomTypeById(id: string) {
+  const rt = await prisma.roomType.findUnique({
+    where: { id },
+    include: {
+      ratePlans: true,
+      rooms: {
+        select: { id: true, roomNumber: true, status: true, isActive: true },
+      },
+    },
+  });
+
+  if (!rt) return null;
+
+  return {
+    ...rt,
+    basePrice: Number(rt.basePrice),
+    amenities: typeof rt.amenities === "string" ? JSON.parse(rt.amenities || "[]") : rt.amenities,
+    images: typeof rt.images === "string" ? JSON.parse(rt.images || "[]") : rt.images,
+    ratePlans: rt.ratePlans.map((rp) => ({
+      ...rp,
+      baseRate: Number(rp.baseRate),
+      seasonalMultiplier: Number(rp.seasonalMultiplier),
+      weekendMultiplier: Number(rp.weekendMultiplier),
+      extraAdultRate: Number(rp.extraAdultRate),
+      extraChildRate: Number(rp.extraChildRate),
+    })),
+    roomsCount: rt.rooms.length,
+  };
+}
+
+export async function deleteRoomType(id: string) {
+  const rt = await prisma.roomType.findUnique({
+    where: { id },
+    include: { rooms: true },
+  });
+  if (!rt) throw new Error(`Room type with ID ${id} not found`);
+
+  if (rt.rooms && rt.rooms.length > 0) {
+    // If rooms exist under this type, deactivate to protect inventory integrity
+    const updated = await prisma.roomType.update({
+      where: { id },
+      data: { isActive: false },
+    });
+    return { success: true, message: "Room type has assigned rooms; deactivated instead of deletion", roomType: updated };
+  }
+
+  const deactivated = await prisma.roomType.update({
+    where: { id },
+    data: { isActive: false },
+  });
+  return { success: true, message: "Room type deactivated successfully", roomType: deactivated };
+}
+
 // =============================================================================
 // RATE PLANS
 // =============================================================================
@@ -579,6 +632,42 @@ export async function updateRatePlan(
     extraAdultRate: Number(plan.extraAdultRate),
     extraChildRate: Number(plan.extraChildRate),
   };
+}
+
+export async function getRatePlanById(id: string) {
+  const plan = await prisma.ratePlan.findUnique({
+    where: { id },
+    include: { roomType: true },
+  });
+
+  if (!plan) return null;
+
+  return {
+    ...plan,
+    baseRate: Number(plan.baseRate),
+    seasonalMultiplier: Number(plan.seasonalMultiplier),
+    weekendMultiplier: Number(plan.weekendMultiplier),
+    extraAdultRate: Number(plan.extraAdultRate),
+    extraChildRate: Number(plan.extraChildRate),
+    roomType: plan.roomType
+      ? {
+          ...plan.roomType,
+          basePrice: Number(plan.roomType.basePrice),
+          amenities: typeof plan.roomType.amenities === "string" ? JSON.parse(plan.roomType.amenities || "[]") : plan.roomType.amenities,
+        }
+      : undefined,
+  };
+}
+
+export async function deleteRatePlan(id: string) {
+  const plan = await prisma.ratePlan.findUnique({ where: { id } });
+  if (!plan) throw new Error(`Rate plan with ID ${id} not found`);
+
+  const updated = await prisma.ratePlan.update({
+    where: { id },
+    data: { isActive: false },
+  });
+  return { success: true, message: "Rate plan deactivated successfully", ratePlan: updated };
 }
 
 // =============================================================================

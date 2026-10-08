@@ -1,7 +1,63 @@
 import { prisma } from "../db/prisma";
-import { MealPlan, IdentityType } from "@hotel/types";
-import { calculateBookingSubtotal, calculateRoomGST, maskAadhaar } from "@hotel/utils";
+import type { MealPlan, IdentityType } from "@hotel/types";
+import {
+  buildReservationQuote,
+  maskAadhaar,
+  roundCurrency,
+  toISODay,
+} from "@hotel/utils";
 import { recordAuditLog } from "./auditService";
+import { isMaskedIdentityValue } from "../security/sanitize";
+import {
+  FrontDeskError,
+  checkIn as checkInStay,
+  checkOut as checkOutStay,
+  switchBookingRoom,
+} from "./frontDeskService";
+
+async function assertRoomAssignable({
+  tx,
+  roomId,
+  checkInDate,
+  checkOutDate,
+}: {
+  tx: any;
+  roomId: string;
+  checkInDate: string;
+  checkOutDate: string;
+}) {
+  const room = await tx.room.findUnique({ where: { id: roomId } });
+  if (!room || !room.isActive) throw new FrontDeskError("Selected room is not active");
+  const conflicting = await tx.booking.findFirst({
+    where: {
+      roomId,
+      status: { in: ["Confirmed", "CheckedIn"] },
+      checkInDate: { lt: new Date(`${checkOutDate}T00:00:00.000Z`) },
+      checkOutDate: { gt: new Date(`${checkInDate}T00:00:00.000Z`) },
+    },
+  });
+  if (conflicting) {
+    throw new FrontDeskError("Room is already booked for these dates");
+  }
+}
+
+async function nextBookingNumber(tx: any, checkInDate: string): Promise<string> {
+  const count = await tx.booking.count();
+  const dateStr = checkInDate.replace(/-/g, "").slice(2);
+  return `BK-${dateStr}-${String(count + 1).padStart(4, "0")}`;
+}
+
+async function nextFolioNumber(tx: any): Promise<string> {
+  const count = await tx.folio.count();
+  const year = new Date().getFullYear();
+  return `FOL-${year}-${String(count + 1).padStart(5, "0")}`;
+}
+
+async function nextPaymentNumber(tx: any): Promise<string> {
+  const count = await tx.payment.count();
+  const year = new Date().getFullYear();
+  return `PAY-${year}-${String(count + 1).padStart(5, "0")}`;
+}
 
 export interface CreateBookingParams {
   hotelId: string;
@@ -28,288 +84,269 @@ export interface CreateBookingParams {
     idNumber?: string;
     corporateGstin?: string;
     corporateName?: string;
+    guestType?: string;
   };
+  discountPercent?: number;
+  discountFlat?: number;
+  mealPlanRatePerPersonPerNight?: number;
   advancePayment?: {
     amount: number;
     method: "Cash" | "UPI" | "Card" | "Razorpay" | "Bank_Transfer";
     transactionRef?: string;
+    panNumber?: string;
   };
   userId?: string;
 }
 
+/**
+ * Creates a reservation.
+ *
+ * The whole write runs in one transaction and is guarded by the same
+ * `assertRoomAssignable` gate used by check-in and room switch, so a room can
+ * never be double-booked: the overlapping-booking probe happens on the
+ * transaction snapshot *before* the booking, folio, GST and payment rows exist.
+ */
 export async function createReservation(params: CreateBookingParams) {
-  let guest = await prisma.guest.findFirst({
-    where: { mobile: params.guest.mobile },
-    include: { identities: true },
-  });
+  const checkInDate = toISODay(params.checkInDate);
+  const checkOutDate = toISODay(params.checkOutDate);
 
-  if (!guest) {
-    guest = await prisma.guest.create({
-      data: {
-        fullName: params.guest.fullName,
-        mobile: params.guest.mobile,
-        email: params.guest.email,
-        address: params.guest.address,
-        city: params.guest.city,
-        stateCode: params.guest.stateCode,
-        state: params.guest.state,
-        country: params.guest.country || "India",
-        corporateGstin: params.guest.corporateGstin,
-        corporateName: params.guest.corporateName,
-      },
+  if (checkInDate >= checkOutDate) {
+    throw new FrontDeskError("Check-out date must be after check-in date", [
+      "Check-out date must be after check-in date",
+    ]);
+  }
+
+  return await prisma.$transaction(async (tx) => {
+    // ---- CHECK (no writes yet) --------------------------------------------
+    let guest = await tx.guest.findFirst({
+      where: { mobile: { endsWith: params.guest.mobile.replace(/[^0-9]/g, "").slice(-10) } },
       include: { identities: true },
     });
 
-    if (params.guest.identityType && params.guest.idNumber) {
-      await prisma.guestIdentity.create({
-        data: {
-          guestId: guest.id,
-          identityType: params.guest.identityType as any,
-          idNumber: params.guest.idNumber,
-          maskedIdNumber:
-            params.guest.identityType === "Aadhaar"
-              ? maskAadhaar(params.guest.idNumber)
-              : params.guest.idNumber.slice(-4).padStart(params.guest.idNumber.length, "*"),
-        },
+    const ratePlan = await tx.ratePlan.findUniqueOrThrow({
+      where: { id: params.ratePlanId },
+      include: { hotel: true, roomType: true },
+    });
+
+    const quote = buildReservationQuote({
+      checkInDate,
+      checkOutDate,
+      adults: params.adults,
+      children: params.children,
+      mealPlan: params.mealPlan,
+      mealPlanRatePerPersonPerNight: params.mealPlanRatePerPersonPerNight,
+      discountPercent: params.discountPercent,
+      discountFlat: params.discountFlat,
+      advanceDeposit: params.advancePayment?.amount,
+      hotelStateCode: ratePlan.hotel.stateCode,
+      guestStateCode: params.guest.stateCode,
+      baseAdults: ratePlan.roomType.baseAdults,
+      maxAdults: ratePlan.roomType.maxAdults,
+      maxChildren: ratePlan.roomType.maxChildren,
+      ratePlan: {
+        baseRate: Number(ratePlan.baseRate),
+        seasonalMultiplier: Number(ratePlan.seasonalMultiplier),
+        weekendMultiplier: Number(ratePlan.weekendMultiplier),
+        extraAdultRate: Number(ratePlan.extraAdultRate),
+        extraChildRate: Number(ratePlan.extraChildRate),
+        mealPlan: ratePlan.mealPlan as MealPlan,
+      },
+    });
+
+    if (quote.errors.length > 0) {
+      throw new FrontDeskError("Reservation cannot be created", quote.errors);
+    }
+
+    if (params.roomId) {
+      await assertRoomAssignable({
+        tx,
+        roomId: params.roomId,
+        checkInDate,
+        checkOutDate,
       });
     }
-  }
 
-  const ratePlan = await prisma.ratePlan.findUniqueOrThrow({
-    where: { id: params.ratePlanId },
-    include: { hotel: true },
-  });
+    // ---- UPDATE ----------------------------------------------------------
+    if (!guest) {
+      guest = await tx.guest.create({
+        data: {
+          fullName: params.guest.fullName,
+          mobile: params.guest.mobile,
+          email: params.guest.email,
+          address: params.guest.address,
+          city: params.guest.city,
+          stateCode: params.guest.stateCode,
+          state: params.guest.state,
+          country: params.guest.country || "India",
+          guestType: (params.guest.guestType ?? "Domestic") as never,
+          corporateGstin: params.guest.corporateGstin,
+          corporateName: params.guest.corporateName,
+        },
+        include: { identities: true },
+      });
 
-  const rateCalc = calculateBookingSubtotal({
-    basePlanRate: Number(ratePlan.baseRate),
-    seasonalMultiplier: Number(ratePlan.seasonalMultiplier),
-    weekendMultiplier: Number(ratePlan.weekendMultiplier),
-    extraAdults: Math.max(0, params.adults - 2),
-    extraChildren: params.children || 0,
-    extraAdultRatePerNight: Number(ratePlan.extraAdultRate),
-    extraChildRatePerNight: Number(ratePlan.extraChildRate),
-    checkInDate: params.checkInDate,
-    checkOutDate: params.checkOutDate,
-    adultCount: params.adults,
-    childCount: params.children,
-    mealPlan: params.mealPlan,
-  });
-
-  const gstCalc = calculateRoomGST({
-    tariffPerNightOrTotal: rateCalc.taxableAmount,
-    hotelStateCode: ratePlan.hotel.stateCode,
-    guestStateCode: params.guest.stateCode,
-  });
-
-  const bookingNumber = `BKG-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
-  const folioNumber = `FOL-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
-
-  const booking = await prisma.$transaction(async (tx) => {
-    if (params.roomId) {
-      const room = await tx.room.findUnique({ where: { id: params.roomId } });
-      if (!room || room.status === "Occupied" || room.status === "Blocked") {
-        throw new Error(`Selected Room ${room?.roomNumber || ""} is not available for booking`);
+      if (params.guest.identityType && params.guest.idNumber && !isMaskedIdentityValue(params.guest.idNumber)) {
+        await tx.guestIdentity.create({
+          data: {
+            guestId: guest.id,
+            identityType: params.guest.identityType as never,
+            idNumber: params.guest.idNumber,
+            maskedIdNumber:
+              params.guest.identityType === "Aadhaar"
+                ? maskAadhaar(params.guest.idNumber)
+                : `****${params.guest.idNumber.slice(-4)}`,
+          },
+        });
       }
     }
 
-    const newBooking = await tx.booking.create({
+    const bookingNumber = await nextBookingNumber(tx, params.checkInDate);
+
+    const booking = await tx.booking.create({
       data: {
         bookingNumber,
         hotelId: params.hotelId,
         roomId: params.roomId,
         roomTypeId: params.roomTypeId,
         ratePlanId: params.ratePlanId,
-        primaryGuestId: guest!.id,
-        checkInDate: new Date(params.checkInDate),
-        checkOutDate: new Date(params.checkOutDate),
+        primaryGuestId: guest.id,
+        checkInDate: new Date(`${checkInDate}T00:00:00.000Z`),
+        checkOutDate: new Date(`${checkOutDate}T00:00:00.000Z`),
         adults: params.adults,
         children: params.children || 0,
-        mealPlan: params.mealPlan as any,
+        mealPlan: params.mealPlan as never,
         bookingSource: params.bookingSource || "Direct",
         specialRequests: params.specialRequests,
-        totalNights: rateCalc.totalNights,
-        roomCharges: rateCalc.roomSubtotal as any,
-        extraCharges: (rateCalc.extraGuestCharges + rateCalc.mealPlanCharges) as any,
-        discountAmount: rateCalc.totalDiscount as any,
-        taxAmount: gstCalc.totalTax as any,
-        grandTotal: gstCalc.grandTotal as any,
-        paidAmount: (params.advancePayment?.amount || 0) as any,
-        balanceAmount: (gstCalc.grandTotal - (params.advancePayment?.amount || 0)) as any,
+        totalNights: quote.totalNights,
+        roomCharges: quote.roomCharges as never,
+        extraCharges: roundCurrency(quote.extraCharges + quote.mealPlanCharges) as never,
+        discountAmount: quote.discountAmount as never,
+        taxAmount: quote.gst.totalTax as never,
+        grandTotal: quote.grandTotal as never,
+        paidAmount: (params.advancePayment?.amount || 0) as never,
+        balanceAmount: quote.balanceDue as never,
         status: "Confirmed",
       },
     });
 
     await tx.bookingGuest.create({
+      data: { bookingId: booking.id, guestId: guest.id, isPrimary: true },
+    });
+
+    await tx.reservation.create({
       data: {
-        bookingId: newBooking.id,
-        guestId: guest!.id,
-        isPrimary: true,
+        bookingId: booking.id,
+        confirmedDate: new Date(),
+        notes: params.specialRequests,
       },
     });
 
     const folio = await tx.folio.create({
       data: {
-        folioNumber,
+        folioNumber: await nextFolioNumber(tx),
         hotelId: params.hotelId,
-        bookingId: newBooking.id,
-        guestId: guest!.id,
+        bookingId: booking.id,
+        guestId: guest.id,
         status: "Open",
-        totalDebit: gstCalc.grandTotal as any,
-        totalCredit: (params.advancePayment?.amount || 0) as any,
-        balanceDue: (gstCalc.grandTotal - (params.advancePayment?.amount || 0)) as any,
+        totalDebit: quote.grandTotal as never,
+        totalCredit: (params.advancePayment?.amount || 0) as never,
+        balanceDue: quote.balanceDue as never,
       },
     });
 
-    const folioItem = await tx.folioItem.create({
-      data: {
-        folioId: folio.id,
-        itemType: "Room",
-        description: `Room Tariff Accommodation (${rateCalc.totalNights} Nights) - SAC ${gstCalc.sacCode}`,
-        quantity: rateCalc.totalNights,
-        unitPrice: (rateCalc.taxableAmount / rateCalc.totalNights) as any,
-        totalPrice: rateCalc.taxableAmount as any,
-        sacCode: gstCalc.sacCode,
-        gstRate: gstCalc.gstRate as any,
-        gstAmount: gstCalc.totalTax as any,
-      },
-    });
+    // One folio line per GST slab keeps the tax invoice defensible when a stay
+    // straddles the 12% / 18% accommodation thresholds.
+    for (const slab of quote.nightsPerSlab) {
+      const item = await tx.folioItem.create({
+        data: {
+          folioId: folio.id,
+          itemType: "Room",
+          description: `Room Tariff Accommodation (${quote.totalNights} Nights, ${slab.nightCount} night(s) @ ${(slab.gstRate * 100).toFixed(0)}% GST) - SAC ${quote.gst.sacCode}`,
+          quantity: slab.nightCount,
+          unitPrice: roundCurrency(slab.taxableAmount / Math.max(1, slab.nightCount)) as never,
+          totalPrice: slab.taxableAmount as never,
+          sacCode: quote.gst.sacCode,
+          gstRate: slab.gstRate as never,
+          gstAmount: slab.totalTax as never,
+        },
+      });
 
-    await tx.gSTTransaction.create({
-      data: {
-        folioId: folio.id,
-        folioItemId: folioItem.id,
-        taxableAmount: rateCalc.taxableAmount as any,
-        cgstRate: gstCalc.cgstRate as any,
-        cgstAmount: gstCalc.cgstAmount as any,
-        sgstRate: gstCalc.sgstRate as any,
-        sgstAmount: gstCalc.sgstAmount as any,
-        igstRate: gstCalc.igstRate as any,
-        igstAmount: gstCalc.igstAmount as any,
-        totalTax: gstCalc.totalTax as any,
-        sacCode: gstCalc.sacCode,
-        placeOfSupply: gstCalc.placeOfSupply,
-      },
-    });
+      await tx.gSTTransaction.create({
+        data: {
+          folioId: folio.id,
+          folioItemId: item.id,
+          taxableAmount: slab.taxableAmount as never,
+          cgstRate: slab.cgstRate as never,
+          cgstAmount: slab.cgstAmount as never,
+          sgstRate: slab.sgstRate as never,
+          sgstAmount: slab.sgstAmount as never,
+          igstRate: slab.igstRate as never,
+          igstAmount: slab.igstAmount as never,
+          totalTax: slab.totalTax as never,
+          sacCode: quote.gst.sacCode,
+          placeOfSupply: quote.gst.placeOfSupply,
+        },
+      });
+    }
 
     if (params.advancePayment && params.advancePayment.amount > 0) {
       await tx.payment.create({
         data: {
-          paymentNumber: `PAY-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`,
+          paymentNumber: await nextPaymentNumber(tx),
           folioId: folio.id,
-          amount: params.advancePayment.amount as any,
-          method: params.advancePayment.method as any,
+          guestId: guest.id,
+          amount: params.advancePayment.amount as never,
+          method: params.advancePayment.method as never,
           status: "Captured",
           transactionRef: params.advancePayment.transactionRef || "Advance Deposit",
+          panNumber: params.advancePayment.panNumber,
           notes: "Advance collected at reservation creation",
         },
       });
     }
 
-    return newBooking;
-  });
+    await recordAuditLog(
+      {
+        hotelId: params.hotelId,
+        userId: params.userId,
+        action: "RESERVATION_CREATED",
+        entity: "Booking",
+        entityId: booking.id,
+        newValue: {
+          bookingNumber,
+          guestName: params.guest.fullName,
+          roomId: params.roomId,
+          checkInDate,
+          checkOutDate,
+          total: quote.grandTotal,
+          deposit: params.advancePayment?.amount ?? 0,
+        },
+      },
+      tx,
+    );
 
-  await recordAuditLog({
-    hotelId: params.hotelId,
-    userId: params.userId,
-    action: "RESERVATION_CREATED",
-    entity: "Booking",
-    entityId: booking.id,
-    newValue: { bookingNumber, guestName: params.guest.fullName, total: gstCalc.grandTotal },
+    return booking;
   });
-
-  return booking;
 }
 
-export async function checkInGuest(bookingId: string, roomId?: string, userId?: string) {
-  return await prisma.$transaction(async (tx) => {
-    const booking = await tx.booking.findUniqueOrThrow({
-      where: { id: bookingId },
-      include: { primaryGuest: { include: { identities: true } } },
-    });
+// -----------------------------------------------------------------------------
+// BACKWARDS-COMPATIBLE WRAPPERS
+// -----------------------------------------------------------------------------
+// The `/api/reservations/*` routes predate this module and are kept working.
+// All four now delegate to the guarded front-desk implementation so there is a
+// single transactional code path for every room mutation.
 
-    const targetRoomId = roomId || booking.roomId;
-    if (!targetRoomId) {
-      throw new Error("Cannot check in without assigning a room");
-    }
-
-    const room = await tx.room.findUniqueOrThrow({ where: { id: targetRoomId } });
-    if (room.status === "Occupied") {
-      throw new Error(`Room ${room.roomNumber} is currently occupied.`);
-    }
-
-    const updatedBooking = await tx.booking.update({
-      where: { id: bookingId },
-      data: {
-        status: "CheckedIn",
-        roomId: targetRoomId,
-        actualCheckIn: new Date(),
-      },
-    });
-
-    await tx.room.update({
-      where: { id: targetRoomId },
-      data: { status: "Occupied" },
-    });
-
-    await recordAuditLog({
-      hotelId: booking.hotelId,
-      userId,
-      action: "GUEST_CHECKED_IN",
-      entity: "Booking",
-      entityId: bookingId,
-      newValue: { roomNumber: room.roomNumber, guest: booking.primaryGuest.fullName },
-    });
-
-    return updatedBooking;
-  });
+export async function checkInGuest(
+  bookingId: string,
+  roomId?: string,
+  userId?: string,
+  additionalPayment?: { amount: number; method?: string; panNumber?: string },
+) {
+  return await checkInStay({ bookingId, roomId, userId, additionalPayment });
 }
 
 export async function checkOutGuest(bookingId: string, userId?: string) {
-  return await prisma.$transaction(async (tx) => {
-    const booking = await tx.booking.findUniqueOrThrow({
-      where: { id: bookingId },
-      include: { folio: { include: { items: true, payments: true } } },
-    });
-
-    if (booking.status !== "CheckedIn") {
-      throw new Error("Guest can only be checked out from CheckedIn status");
-    }
-
-    const updatedBooking = await tx.booking.update({
-      where: { id: bookingId },
-      data: {
-        status: "CheckedOut",
-        actualCheckOut: new Date(),
-      },
-    });
-
-    if (booking.roomId) {
-      await tx.room.update({
-        where: { id: booking.roomId },
-        data: { status: "Dirty" },
-      });
-    }
-
-    if (booking.folio) {
-      const balance = Number(booking.folio.balanceDue);
-      if (balance <= 0.01) {
-        await tx.folio.update({
-          where: { id: booking.folio.id },
-          data: { status: "Settled" },
-        });
-      }
-    }
-
-    await recordAuditLog({
-      hotelId: booking.hotelId,
-      userId,
-      action: "GUEST_CHECKED_OUT",
-      entity: "Booking",
-      entityId: bookingId,
-    });
-
-    return updatedBooking;
-  });
+  return await checkOutStay({ bookingId, userId });
 }
 
 export async function switchRoom(
@@ -317,47 +354,7 @@ export async function switchRoom(
   newRoomId: string,
   reason: string,
   userId?: string,
+  recalculateRate = true,
 ) {
-  return await prisma.$transaction(async (tx) => {
-    const booking = await tx.booking.findUniqueOrThrow({
-      where: { id: bookingId },
-      include: { room: true },
-    });
-
-    const oldRoom = booking.room;
-    const targetRoom = await tx.room.findUniqueOrThrow({ where: { id: newRoomId } });
-
-    if (targetRoom.status === "Occupied" || targetRoom.status === "Blocked") {
-      throw new Error(`Target Room ${targetRoom.roomNumber} is not available for room switch`);
-    }
-
-    if (oldRoom) {
-      await tx.room.update({
-        where: { id: oldRoom.id },
-        data: { status: "Dirty" },
-      });
-    }
-
-    await tx.room.update({
-      where: { id: newRoomId },
-      data: { status: "Occupied" },
-    });
-
-    const updatedBooking = await tx.booking.update({
-      where: { id: bookingId },
-      data: { roomId: newRoomId },
-    });
-
-    await recordAuditLog({
-      hotelId: booking.hotelId,
-      userId,
-      action: "ROOM_SWITCHED",
-      entity: "Booking",
-      entityId: bookingId,
-      previousValue: { roomId: oldRoom?.id, roomNumber: oldRoom?.roomNumber },
-      newValue: { roomId: newRoomId, roomNumber: targetRoom.roomNumber, reason },
-    });
-
-    return updatedBooking;
-  });
+  return await switchBookingRoom({ bookingId, newRoomId, reason, userId, recalculateRate });
 }

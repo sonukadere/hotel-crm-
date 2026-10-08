@@ -1,9 +1,12 @@
 import { Router } from "express";
 import { prisma } from "../db/prisma";
+import { requirePermission } from "../middleware/auth";
+import { validateQuery } from "../middleware/validate";
+import { auditLogQuerySchema } from "../validation/schemas";
 
 export const auditLogsRouter = Router();
 
-auditLogsRouter.get("/", async (req, res, next) => {
+auditLogsRouter.get("/", requirePermission("audit:read"), validateQuery(auditLogQuerySchema), async (req, res, next) => {
   try {
     const { entity, action, limit = 50 } = req.query;
     const where: any = {};

@@ -1,11 +1,18 @@
 import { Router } from "express";
-import { getRatePlans, createRatePlan, updateRatePlan } from "../services/roomService";
+import {
+  getRatePlans,
+  getRatePlanById,
+  createRatePlan,
+  updateRatePlan,
+  deleteRatePlan,
+} from "../services/roomService";
 import { ApiResponse } from "@hotel/types";
+import { requirePermission } from "../middleware/auth";
 
 export const ratePlansRouter = Router();
 
 // GET /rate-plans
-ratePlansRouter.get("/", async (req, res, next) => {
+ratePlansRouter.get("/", requirePermission("room:read"), async (req, res, next) => {
   try {
     const plans = await getRatePlans(
       req.query.hotelId as string,
@@ -22,8 +29,22 @@ ratePlansRouter.get("/", async (req, res, next) => {
   }
 });
 
+// GET /rate-plans/:id
+ratePlansRouter.get("/:id", requirePermission("room:read"), async (req, res, next) => {
+  try {
+    const plan = await getRatePlanById(req.params.id);
+    if (!plan) {
+      res.status(404).json({ success: false, message: "Rate plan not found", timestamp: new Date().toISOString() });
+      return;
+    }
+    res.json({ success: true, data: plan, timestamp: new Date().toISOString() });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // POST /rate-plans
-ratePlansRouter.post("/", async (req, res, next) => {
+ratePlansRouter.post("/", requirePermission("room:write"), async (req, res, next) => {
   try {
     const created = await createRatePlan(req.body);
     res.status(201).json({
@@ -37,7 +58,7 @@ ratePlansRouter.post("/", async (req, res, next) => {
 });
 
 // PATCH /rate-plans/:id
-ratePlansRouter.patch("/:id", async (req, res, next) => {
+ratePlansRouter.patch("/:id", requirePermission("room:write"), async (req, res, next) => {
   try {
     const updated = await updateRatePlan(req.params.id, req.body);
     res.json({
@@ -49,3 +70,18 @@ ratePlansRouter.patch("/:id", async (req, res, next) => {
     next(err);
   }
 });
+
+// DELETE /rate-plans/:id
+ratePlansRouter.delete("/:id", requirePermission("room:write"), async (req, res, next) => {
+  try {
+    const result = await deleteRatePlan(req.params.id);
+    res.json({
+      success: true,
+      data: result,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+

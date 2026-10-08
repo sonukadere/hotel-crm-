@@ -1,3 +1,4 @@
+import { authFetch } from "./http";
 import type { Room, RoomType, RatePlan, Floor, BedType, RoomStatus } from "@hotel/types";
 
 const API_BASE = "http://localhost:4000/api";
@@ -184,7 +185,7 @@ export const INITIAL_ROOMS_DATA: Room[] = [
 
 export async function fetchRoomsApi(): Promise<Room[]> {
   try {
-    const res = await fetch(`${API_BASE}/rooms`, { headers: { "Content-Type": "application/json" } });
+    const res = await authFetch(`${API_BASE}/rooms`, { headers: { "Content-Type": "application/json" } });
     if (res.ok) {
       const data = await res.json();
       if (data.success && Array.isArray(data.data) && data.data.length > 0) {
@@ -199,7 +200,7 @@ export async function fetchRoomsApi(): Promise<Room[]> {
 
 export async function createRoomApi(roomData: Partial<Room>): Promise<Room> {
   try {
-    const res = await fetch(`${API_BASE}/rooms`, {
+    const res = await authFetch(`${API_BASE}/rooms`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(roomData),
@@ -224,7 +225,7 @@ export async function createRoomApi(roomData: Partial<Room>): Promise<Room> {
 
 export async function updateRoomApi(id: string, roomData: Partial<Room>): Promise<Room> {
   try {
-    const res = await fetch(`${API_BASE}/rooms/${id}`, {
+    const res = await authFetch(`${API_BASE}/rooms/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(roomData),
@@ -239,7 +240,7 @@ export async function updateRoomApi(id: string, roomData: Partial<Room>): Promis
 
 export async function deleteRoomApi(id: string): Promise<boolean> {
   try {
-    const res = await fetch(`${API_BASE}/rooms/${id}`, {
+    const res = await authFetch(`${API_BASE}/rooms/${id}`, {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
     });
@@ -250,7 +251,7 @@ export async function deleteRoomApi(id: string): Promise<boolean> {
 
 export async function updateRoomStatusApi(id: string, status: RoomStatus): Promise<boolean> {
   try {
-    const res = await fetch(`${API_BASE}/rooms/${id}/status`, {
+    const res = await authFetch(`${API_BASE}/rooms/${id}/status`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ status }),
@@ -262,7 +263,7 @@ export async function updateRoomStatusApi(id: string, status: RoomStatus): Promi
 
 export async function bulkUpdateRoomStatusApi(roomIds: string[], status: RoomStatus): Promise<boolean> {
   try {
-    const res = await fetch(`${API_BASE}/rooms/bulk-status`, {
+    const res = await authFetch(`${API_BASE}/rooms/bulk-status`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ roomIds, status }),
@@ -274,7 +275,7 @@ export async function bulkUpdateRoomStatusApi(roomIds: string[], status: RoomSta
 
 export async function fetchRoomTypesApi(): Promise<RoomType[]> {
   try {
-    const res = await fetch(`${API_BASE}/room-types`, { headers: { "Content-Type": "application/json" } });
+    const res = await authFetch(`${API_BASE}/room-types`, { headers: { "Content-Type": "application/json" } });
     if (res.ok) {
       const data = await res.json();
       if (data.success && Array.isArray(data.data) && data.data.length > 0) {
@@ -287,7 +288,7 @@ export async function fetchRoomTypesApi(): Promise<RoomType[]> {
 
 export async function createRoomTypeApi(typeData: Partial<RoomType>): Promise<RoomType> {
   try {
-    const res = await fetch(`${API_BASE}/room-types`, {
+    const res = await authFetch(`${API_BASE}/room-types`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(typeData),
@@ -313,9 +314,35 @@ export async function createRoomTypeApi(typeData: Partial<RoomType>): Promise<Ro
   };
 }
 
+export async function updateRoomTypeApi(id: string, typeData: Partial<RoomType>): Promise<RoomType> {
+  try {
+    const res = await authFetch(`${API_BASE}/room-types/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(typeData),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success && data.data) return data.data;
+    }
+  } catch (_e) {}
+  return { id, ...typeData } as RoomType;
+}
+
+export async function deleteRoomTypeApi(id: string): Promise<boolean> {
+  try {
+    const res = await authFetch(`${API_BASE}/room-types/${id}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+    });
+    if (res.ok) return true;
+  } catch (_e) {}
+  return true;
+}
+
 export async function fetchRatePlansApi(): Promise<RatePlan[]> {
   try {
-    const res = await fetch(`${API_BASE}/rate-plans`, { headers: { "Content-Type": "application/json" } });
+    const res = await authFetch(`${API_BASE}/rate-plans`, { headers: { "Content-Type": "application/json" } });
     if (res.ok) {
       const data = await res.json();
       if (data.success && Array.isArray(data.data) && data.data.length > 0) {
@@ -328,7 +355,7 @@ export async function fetchRatePlansApi(): Promise<RatePlan[]> {
 
 export async function createRatePlanApi(planData: Partial<RatePlan>): Promise<RatePlan> {
   try {
-    const res = await fetch(`${API_BASE}/rate-plans`, {
+    const res = await authFetch(`${API_BASE}/rate-plans`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(planData),
@@ -354,9 +381,35 @@ export async function createRatePlanApi(planData: Partial<RatePlan>): Promise<Ra
   };
 }
 
+export async function updateRatePlanApi(id: string, planData: Partial<RatePlan>): Promise<RatePlan> {
+  try {
+    const res = await authFetch(`${API_BASE}/rate-plans/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(planData),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success && data.data) return data.data;
+    }
+  } catch (_e) {}
+  return { id, ...planData } as RatePlan;
+}
+
+export async function deleteRatePlanApi(id: string): Promise<boolean> {
+  try {
+    const res = await authFetch(`${API_BASE}/rate-plans/${id}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+    });
+    if (res.ok) return true;
+  } catch (_e) {}
+  return true;
+}
+
 export async function fetchFloorsApi(): Promise<Floor[]> {
   try {
-    const res = await fetch(`${API_BASE}/floors`, { headers: { "Content-Type": "application/json" } });
+    const res = await authFetch(`${API_BASE}/floors`, { headers: { "Content-Type": "application/json" } });
     if (res.ok) {
       const data = await res.json();
       if (data.success && Array.isArray(data.data) && data.data.length > 0) {
@@ -367,9 +420,30 @@ export async function fetchFloorsApi(): Promise<Floor[]> {
   return INITIAL_FLOORS;
 }
 
+export async function createFloorApi(floorData: Partial<Floor>): Promise<Floor> {
+  try {
+    const res = await authFetch(`${API_BASE}/floors`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(floorData),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success && data.data) return data.data;
+    }
+  } catch (_e) {}
+  return {
+    id: `fl-${Date.now()}`,
+    hotelId: "hotel-1",
+    floorNumber: floorData.floorNumber || 1,
+    name: floorData.name || "Floor",
+    description: floorData.description,
+  };
+}
+
 export async function fetchBedTypesApi(): Promise<BedType[]> {
   try {
-    const res = await fetch(`${API_BASE}/bed-types`, { headers: { "Content-Type": "application/json" } });
+    const res = await authFetch(`${API_BASE}/bed-types`, { headers: { "Content-Type": "application/json" } });
     if (res.ok) {
       const data = await res.json();
       if (data.success && Array.isArray(data.data) && data.data.length > 0) {
@@ -378,4 +452,23 @@ export async function fetchBedTypesApi(): Promise<BedType[]> {
     }
   } catch (_e) {}
   return INITIAL_BED_TYPES;
+}
+
+export async function createBedTypeApi(bedData: Partial<BedType>): Promise<BedType> {
+  try {
+    const res = await authFetch(`${API_BASE}/bed-types`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(bedData),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success && data.data) return data.data;
+    }
+  } catch (_e) {}
+  return {
+    id: `bed-${Date.now()}`,
+    name: bedData.name || "Double",
+    capacity: bedData.capacity || 2,
+  };
 }

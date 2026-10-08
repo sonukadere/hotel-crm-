@@ -1,10 +1,11 @@
+import { authFetch } from "./http";
 import type { NightAuditReport, HotelPerformanceMetrics, FlashReport, PreAuditChecklist } from "@hotel/types";
 
 const API_BASE = "http://localhost:4000/api";
 
 export async function fetchCurrentBusinessDateApi(hotelId?: string): Promise<string> {
   try {
-    const res = await fetch(`${API_BASE}/night-audit/status${hotelId ? `?hotelId=${hotelId}` : ""}`);
+    const res = await authFetch(`${API_BASE}/night-audit/status${hotelId ? `?hotelId=${hotelId}` : ""}`);
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data?.currentBusinessDate) {
@@ -24,7 +25,7 @@ export async function fetchPerformanceMetricsApi(
     if (hotelId) query.set("hotelId", hotelId);
     if (businessDate) query.set("businessDate", businessDate);
 
-    const res = await fetch(`${API_BASE}/night-audit/performance?${query.toString()}`);
+    const res = await authFetch(`${API_BASE}/night-audit/performance?${query.toString()}`);
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data) {
@@ -62,7 +63,7 @@ export async function fetchPreAuditChecklistApi(
     if (hotelId) query.set("hotelId", hotelId);
     if (businessDate) query.set("businessDate", businessDate);
 
-    const res = await fetch(`${API_BASE}/night-audit/pre-check?${query.toString()}`);
+    const res = await authFetch(`${API_BASE}/night-audit/pre-check?${query.toString()}`);
     if (res.ok) {
       const json = await res.json();
       if (json.success && json.data) {
@@ -91,7 +92,7 @@ export async function runNightAuditApi(
   businessDate?: string,
   userId?: string,
 ): Promise<{ auditReport: NightAuditReport; flashReport: FlashReport }> {
-  const res = await fetch(`${API_BASE}/night-audit/run`, {
+  const res = await authFetch(`${API_BASE}/night-audit/run`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -111,7 +112,7 @@ export async function runNightAuditApi(
 
 export async function fetchNightAuditHistoryApi(hotelId?: string): Promise<NightAuditReport[]> {
   try {
-    const res = await fetch(`${API_BASE}/night-audit/history${hotelId ? `?hotelId=${hotelId}` : ""}`);
+    const res = await authFetch(`${API_BASE}/night-audit/history${hotelId ? `?hotelId=${hotelId}` : ""}`);
     if (res.ok) {
       const json = await res.json();
       if (json.success && Array.isArray(json.data)) {

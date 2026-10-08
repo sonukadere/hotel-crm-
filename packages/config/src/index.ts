@@ -71,13 +71,50 @@ export const MEAL_PLANS = {
   AP: { code: "AP", name: "American Plan", description: "Room + All 3 Meals (Breakfast, Lunch, Dinner)" },
 } as const;
 
+/**
+ * MODULE 10 — LOYALTY PROGRAM (Royal Heritage Rewards)
+ *
+ * These are the SEED DEFAULTS for the admin-configurable loyalty settings stored
+ * on `LoyaltySetting` / `LoyaltyTierRule`. The database rows are the source of
+ * truth at runtime; these constants only bootstrap a fresh property and act as
+ * the fallback when no settings row exists yet.
+ */
 export const LOYALTY_CONFIG = {
-  TIERS: {
-    Bronze: { minSpend: 0, pointsPer100Inr: 5, redemptionRateInr: 0.5 },
-    Silver: { minSpend: 50000, pointsPer100Inr: 8, redemptionRateInr: 0.6 },
-    Gold: { minSpend: 150000, pointsPer100Inr: 12, redemptionRateInr: 0.75 },
-  },
+  // Global earning / redemption economics
+  BASE_POINTS_PER_RUPEE: 0.05, // 5 points per ₹100 eligible spend
+  BASE_REDEMPTION_VALUE_PER_POINT: 0.5, // ₹0.50 of folio credit per point
+  MIN_POINTS_FOR_REDEMPTION: 500,
+  MAX_REDEMPTION_PERCENT_PER_FOLIO: 0.5, // cannot credit more than 50% of folio balance
+  EARNING_ENABLED: true,
+  REDEMPTION_ENABLED: true,
+  EARN_ON_PAYMENT_CAPTURE: true,
+
+  // Eligible services for earning (FolioItemType names)
+  ELIGIBLE_ITEM_TYPES: ["Room", "Restaurant", "InRoomDining", "Food", "Spa", "Laundry", "Banquet"],
+  INELIGIBLE_ITEM_TYPES: ["Discount"], // never earn on a discount line
+
+  // Expiry rules — points are issued on a FIFO lot basis
+  EXPIRY_ENABLED: true,
   POINTS_EXPIRY_MONTHS: 24,
+  EXPIRY_GRACE_PERIOD_MONTHS: 3,
+  EXPIRY_BASIS: "EarnTransactionDate",
+
+  // Tier thresholds driven by cumulative LIFETIME QUALIFYING SPEND (₹)
+  TIERS: {
+    Bronze: { minSpend: 0, pointsPerRupee: 0.05, redemptionValuePerPoint: 0.5 },
+    Silver: { minSpend: 50000, pointsPerRupee: 0.08, redemptionValuePerPoint: 0.6 },
+    Gold: { minSpend: 150000, pointsPerRupee: 0.12, redemptionValuePerPoint: 0.75 },
+  },
+} as const;
+
+/** Ordered highest-first for UI presentation. */
+export const LOYALTY_TIER_ORDER = ["Gold", "Silver", "Bronze"] as const;
+
+/** Human-readable tier benefits shown in the CRM admin console. */
+export const LOYALTY_TIER_LABELS: Record<string, string> = {
+  Bronze: "Bronze Member",
+  Silver: "Silver Member",
+  Gold: "Gold Member",
 };
 
 export const DEFAULT_HOTEL_INFO = {

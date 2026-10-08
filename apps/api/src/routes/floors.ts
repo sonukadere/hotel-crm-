@@ -1,11 +1,12 @@
 import { Router } from "express";
 import { getFloors, createFloor } from "../services/roomService";
 import { ApiResponse } from "@hotel/types";
+import { requirePermission } from "../middleware/auth";
 
 export const floorsRouter = Router();
 
 // GET /floors
-floorsRouter.get("/", async (req, res, next) => {
+floorsRouter.get("/", requirePermission("room:read"), async (req, res, next) => {
   try {
     const floors = await getFloors(req.query.hotelId as string);
     const response: ApiResponse<typeof floors> = {
@@ -20,7 +21,7 @@ floorsRouter.get("/", async (req, res, next) => {
 });
 
 // POST /floors
-floorsRouter.post("/", async (req, res, next) => {
+floorsRouter.post("/", requirePermission("room:write"), async (req, res, next) => {
   try {
     const created = await createFloor(req.body);
     res.status(201).json({

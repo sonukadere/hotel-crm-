@@ -82,7 +82,7 @@ export function checkRoomStateTransition(params: {
     };
   }
 
-  if (!params.isActive && params.to !== "Blocked") {
+  if (params.isActive === false && params.to !== "Blocked") {
     return {
       allowed: false,
       reason: "Room is deactivated and can only be set to Blocked until it is re-activated",

@@ -1,7 +1,13 @@
 import { prisma } from "../db/prisma";
 import { NightAuditReport, HotelPerformanceMetrics, NightAuditStatus } from "@hotel/types";
+import {
+  calculateRoomGST,
+  calculateOccupancyRate,
+  calculateADR,
+  calculateRevPAR,
+  advanceBusinessDate,
+} from "@hotel/utils";
 import { recordAuditLog } from "./auditService";
-import { calculateRoomGST } from "@hotel/utils";
 import { getDefaultHotelId } from "./roomService";
 
 // In-memory registry of executed night audits (backed by database audit logs for idempotency)
@@ -169,6 +175,21 @@ export async function runNightAudit(
   const auditKey = `${hotelId}_${businessDate}`;
   const existingAudit = completedAuditsMap.get(auditKey);
   if (existingAudit && existingAudit.status === "Completed") {
+    throw new Error(
+      `Business date ${businessDate} has already been closed and audited. Duplicate audit execution blocked for idempotency.`,
+    );
+  }
+
+  // Also query persistent audit log for this date to prevent duplicate audit across server restarts
+  const dbExistingLog = await prisma.auditLog.findFirst({
+    where: {
+      hotelId,
+      entity: "NightAudit",
+      action: "NIGHT_AUDIT_COMPLETED",
+      newValue: { contains: `"businessDate":"${businessDate}"` },
+    },
+  });
+  if (dbExistingLog) {
     throw new Error(
       `Business date ${businessDate} has already been closed and audited. Duplicate audit execution blocked for idempotency.`,
     );
@@ -403,9 +424,9 @@ export async function runNightAudit(
     // occupancyRate = occupiedRooms / totalAvailableRooms * 100
     // ADR = totalRoomRevenueINR / occupiedRooms
     // RevPAR = totalRoomRevenueINR / totalAvailableRooms
-    const occupancyRate = totalAvailableRooms > 0 ? Math.round((occupiedRooms / totalAvailableRooms) * 100) : 0;
-    const adr = occupiedRooms > 0 ? Math.round(roomRevenue / occupiedRooms) : 0;
-    const revPar = totalAvailableRooms > 0 ? Math.round(roomRevenue / totalAvailableRooms) : 0;
+    const occupancyRate = calculateOccupancyRate(occupiedRooms, totalAvailableRooms);
+    const adr = calculateADR(roomRevenue, occupiedRooms);
+    const revPar = calculateRevPAR(roomRevenue, totalAvailableRooms);
 
     // Outstanding balance across folios
     const allFolios = await prisma.folio.findMany({ where: { hotelId } });
@@ -445,9 +466,7 @@ export async function runNightAudit(
     stepLogs.push(`[Step 9] Generating Executive Daily Flash Report...`);
 
     // Calculate next business date
-    const curDate = new Date(businessDate);
-    curDate.setDate(curDate.getDate() + 1);
-    const nextBusinessDate = curDate.toISOString().split("T")[0]!;
+    const nextBusinessDate = advanceBusinessDate(businessDate);
 
     const flashReport: FlashReport = {
       id: `FLASH-${businessDate}`,
@@ -498,12 +517,16 @@ export async function runNightAudit(
       previousValue: { businessDate, status: "Open" },
       newValue: {
         businessDate,
-        status: "Completed",
+        startedAt,
+        completedAt,
+        user: auditorUserId || "front-desk-manager",
+        chargesPosted,
+        paymentsPosted,
+        errors: errors.length > 0 ? errors : [],
+        finalStatus: "Completed",
         occupancyRate,
         adr,
         revPar,
-        chargesPosted,
-        paymentsPosted,
         totalRevenue: roomRevenue + serviceRevenue,
         taxCollected: totalTaxCollected,
         nextBusinessDate,
@@ -529,7 +552,16 @@ export async function runNightAudit(
       action: "NIGHT_AUDIT_FAILED",
       entity: "NightAudit",
       entityId: reportId,
-      newValue: { businessDate, error: err.message, status: "Failed" },
+      newValue: {
+        businessDate,
+        startedAt,
+        completedAt: new Date().toISOString(),
+        user: auditorUserId || "front-desk-manager",
+        chargesPosted: auditRecord.chargesPosted,
+        paymentsPosted: auditRecord.paymentsPosted,
+        errors: [err.message],
+        finalStatus: "Failed",
+      },
     });
 
     throw err;
@@ -600,10 +632,58 @@ export async function getNightAuditHistory(hotelId?: string): Promise<NightAudit
   const resolvedHotelId = hotelId || (await getDefaultHotelId());
   const audits: NightAuditReport[] = [];
 
+  // 1. In-memory audits
   for (const audit of completedAuditsMap.values()) {
     if (audit.hotelId === resolvedHotelId) {
       audits.push(audit);
     }
+  }
+
+  // 2. Persistent database audit logs
+  try {
+    const logs = await prisma.auditLog.findMany({
+      where: {
+        hotelId: resolvedHotelId,
+        entity: "NightAudit",
+        action: { in: ["NIGHT_AUDIT_COMPLETED", "NIGHT_AUDIT_FAILED"] },
+      },
+      orderBy: { timestamp: "desc" },
+    });
+
+    for (const log of logs) {
+      if (!log.newValue) continue;
+      try {
+        const val = JSON.parse(log.newValue);
+        if (val.businessDate && !audits.some((a) => a.businessDate === val.businessDate)) {
+          audits.push({
+            id: log.entityId || log.id,
+            hotelId: log.hotelId || resolvedHotelId,
+            businessDate: val.businessDate,
+            startedAt: val.startedAt || log.timestamp.toISOString(),
+            completedAt: val.completedAt || log.timestamp.toISOString(),
+            auditorUserId: val.user || log.userId || "front-desk-manager",
+            status: (val.finalStatus || (log.action === "NIGHT_AUDIT_COMPLETED" ? "Completed" : "Failed")) as NightAuditStatus,
+            chargesPosted: val.chargesPosted || 0,
+            paymentsPosted: val.paymentsPosted || 0,
+            roomRevenue: val.totalRevenue || 0,
+            serviceRevenue: 0,
+            taxCollected: val.taxCollected || 0,
+            cashCollected: 0,
+            cardCollected: 0,
+            upiCollected: 0,
+            razorpayCollected: 0,
+            occupiedRooms: 0,
+            totalAvailableRooms: 1,
+            occupancyRate: val.occupancyRate || 0,
+            adr: val.adr || 0,
+            revPar: val.revPar || 0,
+            errors: val.errors && val.errors.length > 0 ? val.errors : undefined,
+          });
+        }
+      } catch {}
+    }
+  } catch (dbErr) {
+    console.warn("Could not load audit log history from DB:", dbErr);
   }
 
   // Sort descending by businessDate

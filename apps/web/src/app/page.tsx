@@ -1,55 +1,76 @@
 import Link from "next/link";
 import {
-  Calendar,
-  Users,
   Utensils,
   Sparkles,
   Wifi,
   Shield,
-  ArrowRight,
   CheckCircle,
 } from "lucide-react";
 import { formatINR } from "@hotel/utils";
+import { MEAL_PLANS } from "@hotel/config";
+import { apiGet } from "../lib/api";
+import type { PublicRoomType } from "../lib/types";
+import { SearchBar } from "../components/SearchBar";
+import { defaultStay, stayQuery } from "../lib/stay";
 
-const FEATURED_ROOMS = [
+export const dynamic = "force-dynamic";
+
+const FALLBACK_ROOMS = [
   {
-    id: "std",
+    id: "",
     name: "Standard Heritage Room",
     basePrice: 4200,
     tag: "Best Value",
-    description: "Elegant courtyard-facing room with handcrafted wooden furnishings and modern amenities.",
-    image: "https://images.unsplash.com/photo-1618773928121-c32242e63f39?auto=format&fit=crop&w=1200&q=80",
-    gstNote: "12% GST Applicable (Tariff <= ₹7,500)",
+    description:
+      "Elegant courtyard-facing room with handcrafted wooden furnishings and modern amenities.",
+    image:
+      "https://images.unsplash.com/photo-1618773928121-c32242e63f39?auto=format&fit=crop&w=1200&q=80",
     amenities: ["Free High-Speed WiFi", "King Bed", "Smart TV", "Tea/Coffee Maker"],
   },
   {
-    id: "dlx",
+    id: "",
     name: "Deluxe Courtyard View",
     basePrice: 6500,
     tag: "Popular",
-    description: "Spacious private balcony suite overlooking the royal botanical gardens and fountain.",
-    image: "https://images.unsplash.com/photo-1590490360182-c33d57733427?auto=format&fit=crop&w=1200&q=80",
-    gstNote: "12% GST Applicable (Tariff <= ₹7,500)",
+    description:
+      "Spacious private balcony suite overlooking the royal botanical gardens and fountain.",
+    image:
+      "https://images.unsplash.com/photo-1590490360182-c33d57733427?auto=format&fit=crop&w=1200&q=80",
     amenities: ["Private Balcony", "Breakfast Included (CP)", "Mini Bar", "Marble Bath"],
   },
   {
-    id: "sui",
+    id: "",
     name: "Maharaja Royal Suite",
     basePrice: 12500,
     tag: "Luxury Masterpiece",
-    description: "The pinnacle of Indian luxury living with separate living salon, jacuzzi, and dedicated butler.",
-    image: "https://images.unsplash.com/photo-1582719478250-c89cae4dc85b?auto=format&fit=crop&w=1200&q=80",
-    gstNote: "18% GST Applicable (Tariff > ₹7,500)",
-    amenities: ["Private Jacuzzi", "24/7 Butler Service", "Complimentary Airport Transfer", "Lounge Access"],
+    description:
+      "The pinnacle of Indian luxury living with separate living salon, jacuzzi, and dedicated butler.",
+    image:
+      "https://images.unsplash.com/photo-1582719478250-c89cae4dc85b?auto=format&fit=crop&w=1200&q=80",
+    amenities: ["Private Jacuzzi", "24/7 Butler Service", "Complimentary Airport Transfer"],
   },
 ];
 
-export default function HomePage() {
+async function getFeaturedRooms(): Promise<PublicRoomType[]> {
+  try {
+    const rooms = await apiGet<PublicRoomType[]>("/public/room-types", {}, { timeoutMs: 4000 });
+    return rooms.slice(0, 3);
+  } catch {
+    return [];
+  }
+}
+
+const FALLBACK_IMAGES = FALLBACK_ROOMS.map((room) => room.image);
+
+export default async function HomePage() {
+  const featured = await getFeaturedRooms();
+  const stay = defaultStay();
+  const searchQuery = stayQuery(stay);
+
   return (
     <div className="space-y-20 pb-20">
       {/* Hero Section */}
       <section className="relative min-h-[85vh] flex items-center justify-center overflow-hidden">
-        {/* Background Overlay */}
         <div
           className="absolute inset-0 bg-cover bg-center"
           style={{
@@ -72,55 +93,12 @@ export default function HomePage() {
           </h1>
 
           <p className="max-w-2xl mx-auto text-base sm:text-lg text-slate-300 leading-relaxed font-light">
-            Indulge in an extraordinary sanctuary of royal heritage, bespoke butler service, and Michelin-inspired Indian cuisine in the heart of Mumbai.
+            Indulge in an extraordinary sanctuary of royal heritage, bespoke butler service, and
+            Michelin-inspired Indian cuisine in the heart of Mumbai.
           </p>
 
-          {/* Quick Booking Widget */}
-          <div className="mt-8 max-w-4xl mx-auto bg-slate-900/90 backdrop-blur-xl border border-slate-700/70 p-4 sm:p-5 rounded-2xl shadow-2xl">
-            <form action="/rooms" className="grid grid-cols-1 sm:grid-cols-4 gap-3 text-left">
-              <div className="space-y-1">
-                <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <Calendar className="w-3.5 h-3.5 text-amber-400" /> Check-In
-                </label>
-                <input
-                  type="date"
-                  defaultValue="2026-10-10"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <Calendar className="w-3.5 h-3.5 text-amber-400" /> Check-Out
-                </label>
-                <input
-                  type="date"
-                  defaultValue="2026-10-12"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <Users className="w-3.5 h-3.5 text-amber-400" /> Guests
-                </label>
-                <select className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500">
-                  <option value="2">2 Adults, 0 Children</option>
-                  <option value="1">1 Adult (Solo)</option>
-                  <option value="3">2 Adults, 1 Child</option>
-                  <option value="4">3 Adults, 1 Child</option>
-                </select>
-              </div>
-
-              <div className="flex items-end">
-                <button
-                  type="submit"
-                  className="w-full h-9 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-slate-950 font-bold text-xs rounded-lg flex items-center justify-center gap-2 shadow-lg shadow-amber-500/20 transition-all cursor-pointer"
-                >
-                  Check Availability <ArrowRight className="w-4 h-4" />
-                </button>
-              </div>
-            </form>
+          <div className="mt-8 max-w-5xl mx-auto">
+            <SearchBar stay={stay} />
           </div>
         </div>
       </section>
@@ -128,66 +106,156 @@ export default function HomePage() {
       {/* Featured Rooms & Suites Showcase */}
       <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-10">
         <div className="text-center space-y-2">
-          <p className="text-xs font-bold text-amber-400 uppercase tracking-widest">Handcrafted Sanctuaries</p>
+          <p className="text-xs font-bold text-amber-400 uppercase tracking-widest">
+            Handcrafted Sanctuaries
+          </p>
           <h2 className="text-3xl sm:text-4xl font-black text-white tracking-tight">
             Our Suites & Heritage Rooms
           </h2>
           <p className="text-sm text-slate-400 max-w-xl mx-auto">
-            Each accommodation features opulent Indian marble, custom royal silks, and state-of-the-art climate amenities.
+            Live tariffs for your selected dates - every price below is calculated by our
+            reservation desk, taxes included.
           </p>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-          {FEATURED_ROOMS.map((room) => (
+          {featured.length > 0
+            ? featured.map((room, index) => (
+                <div
+                  key={room.roomTypeId}
+                  className="group bg-slate-900/60 border border-slate-800 hover:border-amber-500/50 rounded-2xl overflow-hidden shadow-lg transition-all duration-300 flex flex-col"
+                >
+                  <div className="relative h-60 overflow-hidden">
+                    <img
+                      src={room.images[0] ?? FALLBACK_IMAGES[index % FALLBACK_IMAGES.length]}
+                      alt={room.name}
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                    />
+                    <span className="absolute top-3 right-3 bg-slate-950/80 backdrop-blur-md text-amber-400 text-xs font-semibold px-3 py-1 rounded-full border border-amber-500/30">
+                      {room.ratePlans[0]?.name ?? "Direct Rate"}
+                    </span>
+                  </div>
+
+                  <div className="p-6 flex-1 flex flex-col justify-between space-y-4">
+                    <div>
+                      <h3 className="text-xl font-bold text-white group-hover:text-amber-400 transition-colors">
+                        {room.name}
+                      </h3>
+                      <p className="text-xs text-slate-400 mt-2 leading-relaxed">
+                        {room.description}
+                      </p>
+                    </div>
+
+                    <div className="space-y-2 pt-2 border-t border-slate-800/80">
+                      <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-300">
+                        {room.amenities.slice(0, 4).map((amenity) => (
+                          <span key={amenity} className="flex items-center gap-1.5">
+                            <CheckCircle className="w-3 h-3 text-amber-400" /> {amenity}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="pt-4 border-t border-slate-800 flex items-center justify-between">
+                      <div>
+                        <span className="text-2xl font-black text-white">
+                          {formatINR(room.basePrice)}
+                        </span>
+                        <span className="text-xs text-slate-400"> / night</span>
+                        <p className="text-[10px] text-slate-500 font-mono mt-0.5">
+                          {room.occupancy.maxAdults} adults • {room.totalRooms} rooms
+                        </p>
+                      </div>
+                      <Link
+                        href={`/rooms/${room.roomTypeId}?${searchQuery}`}
+                        className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs transition-colors"
+                      >
+                        View & Reserve
+                      </Link>
+                    </div>
+                  </div>
+                </div>
+              ))
+            : FALLBACK_ROOMS.map((room) => (
+                <div
+                  key={room.name}
+                  className="group bg-slate-900/60 border border-slate-800 hover:border-amber-500/50 rounded-2xl overflow-hidden shadow-lg transition-all duration-300 flex flex-col"
+                >
+                  <div className="relative h-60 overflow-hidden">
+                    <img
+                      src={room.image}
+                      alt={room.name}
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                    />
+                    <span className="absolute top-3 right-3 bg-slate-950/80 backdrop-blur-md text-amber-400 text-xs font-semibold px-3 py-1 rounded-full border border-amber-500/30">
+                      {room.tag}
+                    </span>
+                  </div>
+
+                  <div className="p-6 flex-1 flex flex-col justify-between space-y-4">
+                    <div>
+                      <h3 className="text-xl font-bold text-white group-hover:text-amber-400 transition-colors">
+                        {room.name}
+                      </h3>
+                      <p className="text-xs text-slate-400 mt-2 leading-relaxed">
+                        {room.description}
+                      </p>
+                    </div>
+
+                    <div className="space-y-2 pt-2 border-t border-slate-800/80">
+                      <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-300">
+                        {room.amenities.map((amenity) => (
+                          <span key={amenity} className="flex items-center gap-1.5">
+                            <CheckCircle className="w-3 h-3 text-amber-400" /> {amenity}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="pt-4 border-t border-slate-800 flex items-center justify-between">
+                      <div>
+                        <span className="text-2xl font-black text-white">
+                          {formatINR(room.basePrice)}
+                        </span>
+                        <span className="text-xs text-slate-400"> / night</span>
+                      </div>
+                      <Link
+                        href={`/rooms?${searchQuery}`}
+                        className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs transition-colors"
+                      >
+                        Check Dates
+                      </Link>
+                    </div>
+                  </div>
+                </div>
+              ))}
+        </div>
+      </section>
+
+      {/* Meal Plans */}
+      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-8">
+        <div className="text-center space-y-2">
+          <p className="text-xs font-bold text-amber-400 uppercase tracking-widest">
+            Choose Your Meal Plan
+          </p>
+          <h2 className="text-3xl font-black text-white tracking-tight">EP • CP • MAP • AP</h2>
+          <p className="text-sm text-slate-400 max-w-xl mx-auto">
+            Every tariff is priced for the meal plan you pick. The rate you see at checkout already
+            includes the plan and all applicable GST.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+          {Object.values(MEAL_PLANS).map((plan) => (
             <div
-              key={room.id}
-              className="group bg-slate-900/60 border border-slate-800 hover:border-amber-500/50 rounded-2xl overflow-hidden shadow-lg transition-all duration-300 flex flex-col"
+              key={plan.code}
+              className="p-6 rounded-xl bg-slate-900/40 border border-slate-800/80 space-y-3"
             >
-              <div className="relative h-60 overflow-hidden">
-                <img
-                  src={room.image}
-                  alt={room.name}
-                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                />
-                <span className="absolute top-3 right-3 bg-slate-950/80 backdrop-blur-md text-amber-400 text-xs font-semibold px-3 py-1 rounded-full border border-amber-500/30">
-                  {room.tag}
-                </span>
-              </div>
-
-              <div className="p-6 flex-1 flex flex-col justify-between space-y-4">
-                <div>
-                  <h3 className="text-xl font-bold text-white group-hover:text-amber-400 transition-colors">
-                    {room.name}
-                  </h3>
-                  <p className="text-xs text-slate-400 mt-2 leading-relaxed">
-                    {room.description}
-                  </p>
-                </div>
-
-                <div className="space-y-2 pt-2 border-t border-slate-800/80">
-                  <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-300">
-                    {room.amenities.map((a, i) => (
-                      <span key={i} className="flex items-center gap-1.5">
-                        <CheckCircle className="w-3 h-3 text-amber-400" /> {a}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="pt-4 border-t border-slate-800 flex items-center justify-between">
-                  <div>
-                    <span className="text-2xl font-black text-white">{formatINR(room.basePrice)}</span>
-                    <span className="text-xs text-slate-400"> / night</span>
-                    <p className="text-[10px] text-slate-500 font-mono mt-0.5">{room.gstNote}</p>
-                  </div>
-                  <Link
-                    href={`/booking?room=${room.id}&rate=${room.basePrice}`}
-                    className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs transition-colors"
-                  >
-                    Reserve Now
-                  </Link>
-                </div>
-              </div>
+              <span className="inline-block px-3 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-bold tracking-wider">
+                {plan.code}
+              </span>
+              <h4 className="text-base font-bold text-white">{plan.name}</h4>
+              <p className="text-xs text-slate-400 leading-relaxed">{plan.description}</p>
             </div>
           ))}
         </div>
@@ -234,7 +302,8 @@ export default function HomePage() {
               <Shield className="w-8 h-8 text-amber-400" />
               <h4 className="text-base font-bold text-white">Verified Compliance</h4>
               <p className="text-xs text-slate-400 leading-relaxed">
-                Official GST-compliant tax invoicing, Razorpay instant checkout, and masked Aadhaar privacy.
+                Official GST-compliant tax invoicing, Razorpay instant checkout, and masked Aadhaar
+                privacy.
               </p>
             </div>
           </div>

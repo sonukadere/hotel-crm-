@@ -60,6 +60,13 @@ export type LoyaltyTransactionType =
   | "Adjustment"
   | "Reversal";
 
+/**
+ * How long earned points stay valid.
+ * - EarnTransactionDate: 24 months from the date each earn lot was issued (FIFO)
+ * - CalendarYearEnd:     points lapse at the next 31 March
+ */
+export type LoyaltyExpiryBasis = "EarnTransactionDate" | "CalendarYearEnd";
+
 export type RoomOperationalState = RoomStatus | "OutOfService";
 
 export type FolioItemType =
@@ -83,7 +90,7 @@ export type LeadStatus =
 
 export type NightAuditStatus = "Pending" | "Running" | "Completed" | "Failed";
 
-export type UserRole = "SuperAdmin" | "Admin" | "Manager" | "FrontDesk" | "Housekeeping" | "Accountant";
+// `UserRole` is declared once with the MODULE 13 admin/RBAC definition below.
 
 // -------------------------------------------------------------
 // GST & COMPLIANCE INTERFACES
@@ -199,6 +206,7 @@ export interface RateCalculationInput {
   mealPlanRatePerPersonPerNight?: number;
   adultCount?: number;
   childCount?: number;
+  discount?: number; // Flat discount amount
   discountPercent?: number;
   discountFlat?: number;
 }
@@ -210,6 +218,7 @@ export interface RateCalculationResult {
   extraGuestCharges: number;
   mealPlanCharges: number;
   totalDiscount: number;
+  discount: number; // Alias for totalDiscount
   taxableAmount: number;
 }
 
@@ -452,26 +461,185 @@ export interface Invoice {
   paymentStatus: PaymentStatus;
 }
 
-export interface LoyaltyAccount {
+// =============================================================================
+// MODULE 10 — LOYALTY PROGRAM
+// =============================================================================
+
+/** Per-tier earning + redemption economics, configurable by an administrator. */
+export interface LoyaltyTierRule {
   id: string;
-  guestId: string;
+  hotelId: string;
   tier: LoyaltyTier;
-  availablePoints: number;
-  lifetimePoints: number;
-  redeemedPoints: number;
-  expiresAt?: string;
+  /** Cumulative lifetime qualifying spend (₹) required to hold this tier. */
+  thresholdLifetimeSpendInr: number;
+  /** Loyalty points earned per ₹1 of eligible spend at this tier. */
+  pointsPerRupee: number;
+  /** ₹ of folio credit granted per point redeemed at this tier. */
+  redemptionValuePerPoint: number;
+  /** Courtesy points granted on every qualifying earn (0 disables). */
+  monthlyBonusPoints: number;
+  /** Smallest redemption the guest is allowed to make at this tier. */
+  minPointsForRedemption: number;
+  /** Ceiling on how much of a folio can be settled with points (0–1). */
+  maxRedemptionPercentPerFolio: number;
+  isActive: boolean;
   createdAt: string;
   updatedAt: string;
 }
 
+/** Global (per-property) loyalty program configuration. */
+export interface LoyaltySetting {
+  id: string;
+  hotelId: string;
+  /** Fallback points per ₹1 when a tier carries no explicit rate. */
+  basePointsPerRupee: number;
+  /** Fallback ₹ per point when a tier carries no explicit rate. */
+  baseRedemptionValuePerPoint: number;
+  minPointsForRedemption: number;
+  /** Ceiling on what fraction of a folio balance points may settle. */
+  maxRedemptionPercentPerFolio: number;
+  isEarningEnabled: boolean;
+  isRedemptionEnabled: boolean;
+  /** Auto-earn points when a folio payment is captured. */
+  earnOnPaymentCapture: boolean;
+  /** FolioItemTypes eligible for earning (e.g. ["Room", "Restaurant"]). */
+  eligibleItemTypes: FolioItemType[];
+  /** Optional SAC-code allowlist; empty means "all eligible item types". */
+  eligibleSacCodes: string[];
+  /** Points expire this many months after the earning transaction date. */
+  expiryMonths: number;
+  isExpiryEnabled: boolean;
+  expiryGracePeriodMonths: number;
+  expiryBasis: LoyaltyExpiryBasis;
+  /** Running expiry counters shown on the loyalty account. */
+  lastExpiryRunAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Fully hydrated program configuration consumed by the engine + services. */
+export interface LoyaltyProgramSettings {
+  hotelId?: string;
+  basePointsPerRupee: number;
+  baseRedemptionValuePerPoint: number;
+  minPointsForRedemption: number;
+  maxRedemptionPercentPerFolio: number;
+  isEarningEnabled: boolean;
+  isRedemptionEnabled: boolean;
+  earnOnPaymentCapture: boolean;
+  eligibleItemTypes: FolioItemType[];
+  eligibleSacCodes: string[];
+  isExpiryEnabled: boolean;
+  expiryMonths: number;
+  expiryGracePeriodMonths: number;
+  expiryBasis: LoyaltyExpiryBasis;
+  tiers: LoyaltyTierRule[];
+}
+
+export interface LoyaltyTierProgress {
+  currentTier: LoyaltyTier;
+  nextTier?: LoyaltyTier;
+  currentTierThresholdInr: number;
+  nextTierThresholdInr: number;
+  lifetimeSpendInr: number;
+  spendToNextTierInr: number;
+  /** 0–100 progress within the current tier band. */
+  progressPercent: number;
+}
+
+export interface LoyaltyAccount {
+  id: string;
+  guestId: string;
+  hotelId?: string;
+  tier: LoyaltyTier;
+  availablePoints: number;
+  lifetimePoints: number;
+  redeemedPoints: number;
+  expiredPoints: number;
+  /** Cumulative qualifying spend (₹) that drives the tier. */
+  lifetimeSpendInr: number;
+  /** Points that will lapse on `expiresAt`. */
+  pointsExpiringQty: number;
+  expiresAt?: string;
+  tierChangedAt?: string;
+  lastEarnedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * An append-only ledger entry. Rows are never updated or deleted — a
+ * correction is always expressed as a NEW `Reversal` (or `Adjustment`) row
+ * that references its original via `reversalOfTransactionId`.
+ */
 export interface LoyaltyTransaction {
   id: string;
   loyaltyAccountId: string;
+  hotelId?: string;
   type: LoyaltyTransactionType;
+  /** Signed delta: positive credits the account, negative debits it. */
   points: number;
+  /** Running `availablePoints` immediately after this row was posted. */
+  balanceAfter: number;
+  /** Set when this row reverses another row; unique, so double-reversal is impossible. */
+  reversalOfTransactionId?: string;
+  /** Set on the redemption row and on the reversal of that redemption. */
+  referencePaymentId?: string;
   referenceFolioId?: string;
+  /** Eligible ₹ spend that produced an `Earn`. */
+  eligibleSpendInr?: number;
+  /** Folio credit ₹ produced by a `Redeem`. */
+  creditInr?: number;
+  tier: LoyaltyTier;
+  description?: string;
   notes?: string;
+  expiresAt?: string;
+  createdByUserId?: string;
   createdAt: string;
+}
+
+/** Guest-facing loyalty account view returned by the API. */
+export interface LoyaltyAccountSummary {
+  account: LoyaltyAccount;
+  guestName?: string;
+  guestMobile?: string;
+  progress: LoyaltyTierProgress;
+  expiry: {
+    isExpiryEnabled: boolean;
+    nextExpiryDate?: string;
+    pointsExpiring: number;
+    gracePeriodMonths: number;
+  };
+  value: {
+    pointsPerRupee: number;
+    redemptionValuePerPoint: number;
+    redeemableValueInr: number;
+    minPointsForRedemption: number;
+    maxRedemptionPercentPerFolio: number;
+  };
+}
+
+export interface LoyaltyRedemptionResult {
+  transaction: LoyaltyTransaction;
+  paymentId: string;
+  folioId: string;
+  pointsRedeemed: number;
+  creditInr: number;
+  redemptionValuePerPoint: number;
+  account: LoyaltyAccount;
+}
+
+/** Reconciliation proof that `availablePoints` equals the sum of the ledger. */
+export interface LoyaltyLedgerIntegrity {
+  accountId: string;
+  isBalanced: boolean;
+  recordedBalance: number;
+  ledgerSum: number;
+  drift: number;
+  transactionCount: number;
+  lastTransactionId?: string;
+  lastBalanceAfter?: number;
+  errors: string[];
 }
 
 export interface CRMLead {
@@ -924,11 +1092,226 @@ export interface FrontDeskDashboardSummary {
   arrivals: number;
   departures: number;
   inHouse: number;
+  inHouseGuests: number;
   dirtyRooms: number;
   maintenanceRooms: number;
   roomRevenue: number;
   advanceDepositsHeld: number;
   outstandingBalance: number;
+}
+
+// =============================================================================
+// MODULE 13 — ADMIN DASHBOARD & RBAC
+// =============================================================================
+
+export type UserRole =
+  | "SuperAdmin"
+  | "Admin"
+  | "Manager"
+  | "FrontDesk"
+  | "Housekeeping"
+  | "Accountant";
+
+export type AdminDashboardPermission =
+  | "reservation:create"
+  | "reservation:checkin"
+  | "reservation:checkout"
+  | "reservation:room-switch"
+  | "guest:create"
+  | "payment:create"
+  | "service:create"
+  | "room:status-update"
+  | "folio:view"
+  | "folio:settle"
+  | "reports:view";
+
+export interface AdminDashboardCards {
+  occupancyRate: number; // percentage
+  occupiedRooms: number;
+  totalAvailableRooms: number;
+  totalRooms: number;
+  todayRevenue: number; // INR
+  roomRevenue: number;
+  servicesRevenue: number;
+  adr: number; // INR
+  revPar: number; // INR
+  checkInsToday: number;
+  checkOutsToday: number;
+  availableRooms: number;
+  dirtyRooms: number;
+  maintenanceRooms: number;
+  pendingPayments: number; // INR outstanding balance
+}
+
+export interface AdminRoomStatusSummary {
+  clean: number;
+  dirty: number;
+  occupied: number;
+  blocked: number;
+  maintenance: number;
+  available: number;
+  total: number;
+}
+
+export interface AdminArrivalItem {
+  bookingId: string;
+  bookingNumber: string;
+  guestName: string;
+  mobile: string;
+  roomNumber?: string;
+  roomType: string;
+  checkInDate: string;
+  checkOutDate: string;
+  grandTotal: number;
+  paidAmount: number;
+  balanceDue: number;
+  status: string;
+}
+
+export interface AdminDepartureItem {
+  bookingId: string;
+  bookingNumber: string;
+  guestName: string;
+  roomNumber: string;
+  checkInDate: string;
+  checkOutDate: string;
+  balanceDue: number;
+  status: string;
+}
+
+export interface AdminCurrentGuestItem {
+  bookingId: string;
+  guestId: string;
+  guestName: string;
+  mobile: string;
+  roomNumber: string;
+  roomType: string;
+  checkInDate: string;
+  checkOutDate: string;
+  grandTotal: number;
+  balanceDue: number;
+  loyaltyTier?: string;
+}
+
+export interface AdminOutstandingFolioItem {
+  folioId: string;
+  folioNumber: string;
+  bookingId?: string;
+  guestName: string;
+  roomNumber?: string;
+  totalDebit: number;
+  totalCredit: number;
+  balanceDue: number;
+  status: string;
+  createdAt: string;
+}
+
+export interface AdminRecentPaymentItem {
+  paymentId: string;
+  folioNumber?: string;
+  guestName?: string;
+  amount: number;
+  method: string;
+  status: string;
+  receivedAt: string;
+  reference?: string;
+}
+
+export interface AdminBookingSourceItem {
+  source: string;
+  count: number;
+  revenue: number;
+  percentage: number;
+}
+
+export interface AdminRevenueSummary {
+  roomRevenue: number;
+  serviceRevenue: number;
+  cgst: number;
+  sgst: number;
+  igst: number;
+  totalTax: number;
+  netRevenue: number;
+  totalBilled: number;
+}
+
+export interface AdminDashboardSections {
+  roomStatus: AdminRoomStatusSummary;
+  todayArrivals: AdminArrivalItem[];
+  todayDepartures: AdminDepartureItem[];
+  currentGuests: AdminCurrentGuestItem[];
+  outstandingFolios: AdminOutstandingFolioItem[];
+  recentPayments: AdminRecentPaymentItem[];
+  bookingSources: AdminBookingSourceItem[];
+  revenueSummary: AdminRevenueSummary;
+}
+
+export interface AdminDashboardData {
+  hotelId: string;
+  hotelName: string;
+  businessDate: string;
+  cards: AdminDashboardCards;
+  sections: AdminDashboardSections;
+  userRole?: UserRole;
+  permissions?: AdminDashboardPermission[];
+}
+
+// =============================================================================
+// MODULE 15 — REPORTS
+// =============================================================================
+
+export type HotelReportType =
+  | "daily-revenue"
+  | "occupancy"
+  | "adr"
+  | "revpar"
+  | "gst"
+  | "payment-collection"
+  | "outstanding-folio"
+  | "check-in"
+  | "check-out"
+  | "cancellation"
+  | "no-show"
+  | "room-status"
+  | "service-revenue"
+  | "loyalty";
+
+export type ReportFilterPreset = "today" | "yesterday" | "current-week" | "current-month" | "custom";
+
+export interface ReportFilter {
+  preset: ReportFilterPreset;
+  startDate?: string;
+  endDate?: string;
+  hotelId?: string;
+}
+
+export interface ReportColumn {
+  key: string;
+  label: string;
+  align?: "left" | "right" | "center";
+  format?: "currency" | "percent" | "number" | "date" | "text" | "badge";
+}
+
+export interface ReportSummaryItem {
+  label: string;
+  value: string | number;
+  format?: "currency" | "percent" | "number" | "text";
+}
+
+export interface HotelReportResponse<T = Record<string, any>> {
+  reportType: HotelReportType;
+  title: string;
+  description: string;
+  filter: {
+    preset: ReportFilterPreset;
+    startDate: string;
+    endDate: string;
+  };
+  columns: ReportColumn[];
+  summary: ReportSummaryItem[];
+  rows: T[];
+  totals: Record<string, number | string>;
+  generatedAt: string;
 }
 
 // -------------------------------------------------------------

@@ -88,6 +88,12 @@ enum LoyaltyTransactionType {
   Reversal
 }
 
+/// How long earned points stay valid.
+enum LoyaltyExpiryBasis {
+  EarnTransactionDate
+  CalendarYearEnd
+}
+
 enum FolioItemType {
   Room
   Food
@@ -152,6 +158,9 @@ model Hotel {
   auditLogs    AuditLog[]
   leads        CRMLead[]
   users        User[]
+  loyaltySettings      LoyaltySetting[]
+  loyaltyTierRules     LoyaltyTierRule[]
+  loyaltyAccounts      LoyaltyAccount[]
 
   @@index([gstin])
   @@index([stateCode])
@@ -462,7 +471,10 @@ model Payment {
   razorpayOrderId    String?
   razorpayPaymentId  String?
   razorpaySignature  String?
-  panNumber          String? // Mandated for cash > 50,000
+panNumber          String? // Mandated for cash > 50,000
+  isLoyaltyRedemption Boolean     @default(false) // Posted by the loyalty redemption flow, not by a gateway
+  loyaltyTransactionId String? // The LoyaltyTransaction this credit belongs to (reverse-reversal link)
+  refundedAmount     Decimal       @default(0.00) @db.Decimal(12, 2) // Drives proportional loyalty reversal on partial refunds
   notes              String?
   receivedAt         DateTime      @default(now())
   createdAt          DateTime      @default(now())
@@ -473,6 +485,7 @@ model Payment {
   @@index([razorpayOrderId])
   @@index([method])
   @@index([status])
+  @@index([isLoyaltyRedemption])
 }
 
 model GSTTransaction {
@@ -545,31 +558,109 @@ model CRMLead {
 }
 
 model LoyaltyAccount {
-  id              String      @id @default(cuid())
-  guestId         String      @unique
-  guest           Guest       @relation(fields: [guestId], references: [id], onDelete: Cascade)
-  tier            LoyaltyTier @default(Bronze)
-  availablePoints Int         @default(0)
-  lifetimePoints  Int         @default(0)
-  redeemedPoints  Int         @default(0)
-  expiresAt       DateTime?
-  createdAt       DateTime    @default(now())
-  updatedAt       DateTime    @updatedAt
+  id                 String      @id @default(cuid())
+  guestId            String      @unique
+  guest              Guest       @relation(fields: [guestId], references: [id], onDelete: Cascade)
+  hotelId            String?
+  hotel              Hotel?      @relation(fields: [hotelId], references: [id])
+  tier               LoyaltyTier @default(Bronze)
+  availablePoints    Int         @default(0) // Cached projection of SUM(transactions.points) — never written without a LoyaltyTransaction
+  lifetimePoints     Int         @default(0)
+  redeemedPoints     Int         @default(0)
+  expiredPoints      Int         @default(0)
+  lifetimeSpendInr   Decimal     @default(0.00) @db.Decimal(14, 2) // Cumulative qualifying spend drives the tier
+  pointsExpiringQty  Int         @default(0)
+  expiresAt          DateTime? // Next expiry date of the oldest live lot
+  tierChangedAt      DateTime?
+  lastEarnedAt       DateTime?
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
 
   transactions    LoyaltyTransaction[]
+
+  @@index([hotelId])
+  @@index([tier])
 }
 
-model LoyaltyTransaction {
-  id               String                 @id @default(cuid())
-  loyaltyAccountId String
-  loyaltyAccount   LoyaltyAccount         @relation(fields: [loyaltyAccountId], references: [id], onDelete: Cascade)
-  type             LoyaltyTransactionType
-  points           Int
-  referenceFolioId String?
-  notes            String?
-  createdAt        DateTime               @default(now())
+/// Admin-configurable loyalty program settings (one row per property).
+model LoyaltySetting {
+  id                            String          @id @default(cuid())
+  hotelId                       String          @unique
+  hotel                         Hotel           @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  basePointsPerRupee            Decimal         @default(0.05) @db.Decimal(7, 4)
+  baseRedemptionValuePerPoint   Decimal         @default(0.50) @db.Decimal(7, 4)
+  minPointsForRedemption        Int             @default(500)
+  maxRedemptionPercentPerFolio  Decimal         @default(0.50) @db.Decimal(5, 4)
+  isEarningEnabled              Boolean         @default(true)
+  isRedemptionEnabled           Boolean         @default(true)
+  earnOnPaymentCapture          Boolean         @default(true)
+  eligibleItemTypes             String          @default("[\"Room\",\"Restaurant\",\"InRoomDining\",\"Food\",\"Spa\",\"Laundry\",\"Banquet\"]")
+  eligibleSacCodes              String          @default("[]")
+  isExpiryEnabled               Boolean         @default(true)
+  expiryMonths                  Int             @default(24)
+  expiryGracePeriodMonths       Int             @default(3)
+  expiryBasis                   LoyaltyExpiryBasis @default(EarnTransactionDate)
+  lastExpiryRunAt               DateTime?
+  createdAt                     DateTime        @default(now())
+  updatedAt                     DateTime        @updatedAt
 
+  tiers LoyaltyTierRule[]
+
+  @@index([hotelId])
+}
+
+/// Per-tier thresholds and earn/redeem economics.
+model LoyaltyTierRule {
+  id                           String      @id @default(cuid())
+  hotelId                      String
+  hotel                        Hotel       @relation(fields: [hotelId], references: [id], onDelete: Cascade)
+  tier                         LoyaltyTier
+  thresholdLifetimeSpendInr    Decimal     @default(0.00) @db.Decimal(14, 2)
+  pointsPerRupee               Decimal     @default(0.05) @db.Decimal(7, 4)
+  redemptionValuePerPoint      Decimal     @default(0.50) @db.Decimal(7, 4)
+  monthlyBonusPoints           Int         @default(0)
+  minPointsForRedemption       Int         @default(500)
+  maxRedemptionPercentPerFolio Decimal     @default(0.50) @db.Decimal(5, 4)
+  isActive                     Boolean     @default(true)
+  createdAt                    DateTime    @default(now())
+  updatedAt                    DateTime    @updatedAt
+
+  setting LoyaltySetting? @relation(fields: [hotelId], references: [hotelId], map: "LoyaltyTierRule_setting_hotelId_fkey")
+
+  @@unique([hotelId, tier])
+  @@index([hotelId])
+}
+
+/// APPEND-ONLY LEDGER. Rows are never updated or deleted — corrections are
+/// expressed as a new Reversal/Adjustment row referencing the original.
+model LoyaltyTransaction {
+  id                       String                 @id @default(cuid())
+  loyaltyAccountId         String
+  loyaltyAccount           LoyaltyAccount         @relation(fields: [loyaltyAccountId], references: [id], onDelete: Cascade)
+  hotelId                  String?
+  type                     LoyaltyTransactionType
+  points                   Int // Signed delta: credits positive, debits negative
+  balanceAfter             Int // Running availablePoints immediately after this row
+  reversalOfTransactionId  String? // Unique: a row can be reversed at most once
+  reversalOf               LoyaltyTransaction?    @relation("LoyaltyReversal", fields: [reversalOfTransactionId], references: [id])
+  reversedBy               LoyaltyTransaction?    @relation("LoyaltyReversal")
+  referencePaymentId       String?
+  referenceFolioId         String?
+  eligibleSpendInr         Decimal?               @db.Decimal(12, 2)
+  creditInr                Decimal?               @db.Decimal(12, 2)
+  tier                     LoyaltyTier            @default(Bronze)
+  description              String?
+  notes                    String?
+  expiresAt                DateTime?
+  createdByUserId          String?
+  createdAt                DateTime               @default(now())
+
+  @@unique([reversalOfTransactionId])
   @@index([loyaltyAccountId])
+  @@index([hotelId])
+  @@index([type])
+  @@index([referenceFolioId])
+  @@index([referencePaymentId])
 }
 
 model User {

@@ -1,129 +1,171 @@
 import { Router } from "express";
-import crypto from "crypto";
 import {
   createRazorpayOrder,
-  verifyRazorpaySignature,
-  recordPayment,
-  processRefund,
+  verifyAndRecordRazorpayPayment,
+  handleRazorpayWebhookEvent,
+  recordCashPayment,
+  recordGenericPayment,
+  processPaymentRefund,
 } from "../services/paymentService";
-import { prisma } from "../db/prisma";
+import { actorId, requirePermission } from "../middleware/auth";
+import { validateBody } from "../middleware/validate";
+import { paymentSchema, razorpayOrderSchema, razorpayVerifySchema, refundSchema } from "../validation/schemas";
 
 export const paymentsRouter = Router();
 
-paymentsRouter.post("/create-order", async (req, res, next) => {
+/**
+ * POST /payments/webhook
+ * PUBLIC (mounted before the auth gate): Razorpay calls this directly.
+ * Authenticated by the X-Razorpay-Signature header + HMAC using the
+ * configured webhook secret, never by a bearer token.
+ */
+export const paymentsWebhookRouter = Router();
+paymentsWebhookRouter.post("/", async (req, res, next) => {
   try {
-    const { folioId, amount } = req.body;
-    const order = await createRazorpayOrder({ folioId, amount });
-    res.json({ success: true, data: order, timestamp: new Date().toISOString() });
-  } catch (err) {
+    const signature = req.headers["x-razorpay-signature"] as string | undefined;
+    const rawBody = (req as any).rawBody || JSON.stringify(req.body);
+
+    const result = await handleRazorpayWebhookEvent({
+      rawBody,
+      signatureHeader: signature,
+      eventPayload: req.body,
+    });
+
+    res.status(200).json(result);
+  } catch (err: any) {
     next(err);
   }
 });
 
-paymentsRouter.post("/verify", async (req, res, next) => {
+/**
+ * POST /payments/create-order
+ * Creates Razorpay order after backend validates payable amount against folio balance
+ */
+paymentsRouter.post("/create-order", requirePermission("folio:read"), validateBody(razorpayOrderSchema), async (req, res, next) => {
   try {
-    const { folioId, razorpayOrderId, razorpayPaymentId, razorpaySignature, amount, userId } = req.body;
-    const isValid = verifyRazorpaySignature(razorpayOrderId, razorpayPaymentId, razorpaySignature);
-    if (!isValid) {
-      res.status(400).json({ success: false, message: "Invalid Razorpay signature", timestamp: new Date().toISOString() });
-      return;
-    }
+    const { folioId, amount } = req.body;
+    const order = await createRazorpayOrder({ folioId, amount: amount ? Number(amount) : undefined });
+    res.json({ success: true, data: order, timestamp: new Date().toISOString() });
+  } catch (err: any) {
+    next(err);
+  }
+});
 
-    const payment = await recordPayment({
+/**
+ * POST /payments/verify
+ * Verifies Razorpay payment signature, captures payment, recalculates folio credit
+ */
+paymentsRouter.post("/verify", requirePermission("payment:capture"), validateBody(razorpayVerifySchema), async (req, res, next) => {
+  try {
+    const {
       folioId,
-      amount,
-      method: "Razorpay",
       razorpayOrderId,
       razorpayPaymentId,
       razorpaySignature,
-      userId,
+      amount,
+      notes,
+    } = req.body;
+
+    const result = await verifyAndRecordRazorpayPayment({
+      folioId,
+      razorpayOrderId,
+      razorpayPaymentId,
+      razorpaySignature,
+      amount: amount ? Number(amount) : undefined,
+      userId: actorId(req),
+      notes,
     });
 
-    res.json({ success: true, data: payment, message: "Razorpay payment verified and posted", timestamp: new Date().toISOString() });
-  } catch (err) {
+    res.json({
+      success: true,
+      data: result,
+      message: result.duplicate
+        ? "Payment was already recorded"
+        : "Razorpay payment successfully verified, captured, and credited to folio",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err: any) {
     next(err);
   }
 });
 
-paymentsRouter.post("/webhook", async (req, res, next) => {
+/**
+ * POST /payments/cash
+ * Enforces Section 269ST & Rule 114B PAN checks before accepting front desk cash
+ */
+paymentsRouter.post("/cash", requirePermission("payment:capture"), validateBody(paymentSchema), async (req, res, next) => {
   try {
-    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET || "placeholder_webhook_secret";
-    const signature = req.headers["x-razorpay-signature"] as string;
-
-    if (signature) {
-      const shasum = crypto.createHmac("sha256", webhookSecret);
-      shasum.update(JSON.stringify(req.body));
-      const digest = shasum.digest("hex");
-      if (digest !== signature && !signature.startsWith("test_")) {
-        res.status(400).json({ success: false, message: "Invalid webhook signature" });
-        return;
-      }
-    }
-
-    const event = req.body.event;
-    const payload = req.body.payload;
-
-    if (event === "payment.captured") {
-      const paymentEntity = payload.payment.entity;
-      const orderId = paymentEntity.order_id;
-      const paymentId = paymentEntity.id;
-      const amountINR = paymentEntity.amount / 100;
-
-      // Idempotency check: see if already recorded
-      const existing = await prisma.payment.findFirst({
-        where: { razorpayPaymentId: paymentId },
-      });
-
-      if (!existing && paymentEntity.notes?.folioId) {
-        await recordPayment({
-          folioId: paymentEntity.notes.folioId,
-          amount: amountINR,
-          method: "Razorpay",
-          razorpayOrderId: orderId,
-          razorpayPaymentId: paymentId,
-          notes: "Captured via Razorpay Webhook",
-        });
-      }
-    }
-
-    res.status(200).json({ status: "ok" });
-  } catch (err) {
-    next(err);
-  }
-});
-
-paymentsRouter.post("/cash", async (req, res, next) => {
-  try {
-    const { folioId, amount, panNumber, notes, userId } = req.body;
-    const payment = await recordPayment({
-      folioId,
+    const { amount, panNumber, notes } = req.body;
+    const result = await recordCashPayment({
+      folioId: req.body.folioId as string,
       amount,
-      method: "Cash",
       panNumber,
       notes,
-      userId,
+      userId: actorId(req),
     });
-    res.status(201).json({ success: true, data: payment, timestamp: new Date().toISOString() });
-  } catch (err) {
+
+    res.status(201).json({
+      success: true,
+      data: result,
+      message: `Cash payment of ${amount.toLocaleString("en-IN")} recorded under Section 269ST compliance`,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err: any) {
     next(err);
   }
 });
 
-paymentsRouter.post("/record", async (req, res, next) => {
+/**
+ * POST /payments/refund
+ * Processes payment refund and recomputes folio credit
+ */
+paymentsRouter.post("/refund", requirePermission("payment:refund"), validateBody(refundSchema), async (req, res, next) => {
   try {
-    const payment = await recordPayment(req.body);
-    res.status(201).json({ success: true, data: payment, timestamp: new Date().toISOString() });
-  } catch (err) {
+    const { amount, reason } = req.body;
+    const paymentId = req.body.paymentId as string;
+
+    const result = await processPaymentRefund({
+      paymentId,
+      refundAmount: Number(amount),
+      reason,
+      userId: actorId(req),
+    });
+
+    res.json({
+      success: true,
+      data: result,
+      message: `Payment refund of ${Number(amount).toLocaleString("en-IN")} processed`,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err: any) {
     next(err);
   }
 });
 
-paymentsRouter.post("/refund", async (req, res, next) => {
+/**
+ * POST /payments/record
+ * Generic payment recording (UPI, Card, Bank Transfer)
+ */
+paymentsRouter.post("/record", requirePermission("payment:capture"), validateBody(paymentSchema), async (req, res, next) => {
   try {
-    const { paymentId, refundAmount, reason, userId } = req.body;
-    const refunded = await processRefund({ paymentId, refundAmount, reason, userId });
-    res.json({ success: true, data: refunded, timestamp: new Date().toISOString() });
-  } catch (err) {
+    const { amount, method, transactionRef, panNumber, notes } = req.body;
+    const result = await recordGenericPayment({
+      folioId: req.body.folioId as string,
+      amount,
+      method,
+      transactionRef,
+      panNumber,
+      notes,
+      userId: actorId(req),
+    });
+
+    res.status(201).json({
+      success: true,
+      data: result,
+      message: `Payment of ${amount.toLocaleString("en-IN")} recorded via ${method}`,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err: any) {
     next(err);
   }
 });

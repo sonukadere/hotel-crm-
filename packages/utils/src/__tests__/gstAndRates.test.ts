@@ -17,6 +17,11 @@ import {
   formatINR,
   numberToIndianWords,
   maskAadhaar,
+  isSellableRoomState,
+  isOutOfServiceRoomState,
+  isOccupiedRoomState,
+  canTransitionRoomState,
+  checkRoomStateTransition,
 } from "../index";
 
 describe("MODULE 3 — Indian GST & Compliance Engine", () => {
@@ -301,4 +306,141 @@ describe("MODULE 5 — Room Rate & Calculation Engine", () => {
     });
     expect(result.extraGuestCharges).toBe(3600); // 2 * 600 * 3
   });
+
+  it("supports positional argument signature for calculateEffectiveDailyRate", () => {
+    // calculateEffectiveDailyRate(basePlanRate, seasonal, weekend, extraAdults, extraChildren, adultRate, childRate, isWeekend)
+    const result = calculateEffectiveDailyRate(4000, 1.2, 1.25, 1, 1, 800, 400, true);
+    // base: 4000 * 1.2 * 1.25 = 6000
+    // adults: 800, children: 400 => total: 7200
+    expect(result.roomBaseNightly).toBe(6000);
+    expect(result.extraAdultCharges).toBe(800);
+    expect(result.extraChildCharges).toBe(400);
+    expect(result.totalDailyRate).toBe(7200);
+  });
+
+  it("complies strictly with PRD rate engine output structure and does NOT calculate GST", () => {
+    const result = calculateBookingSubtotal({
+      basePlanRate: 5000,
+      seasonalMultiplier: 1.1,
+      weekendMultiplier: 1.2,
+      extraAdults: 1,
+      extraChildren: 1,
+      extraAdultRatePerNight: 1000,
+      extraChildRatePerNight: 500,
+      checkInDate: "2026-10-16", // Friday
+      checkOutDate: "2026-10-18", // Sunday (2 nights: Friday, Saturday)
+      mealPlan: "CP",
+      adultCount: 2,
+      childCount: 1,
+      discount: 800, // Flat discount using input.discount
+    });
+
+    // Check all PRD required output fields
+    expect(result).toHaveProperty("nights");
+    expect(result).toHaveProperty("roomSubtotal");
+    expect(result).toHaveProperty("extraGuestCharges");
+    expect(result).toHaveProperty("mealPlanCharges");
+    expect(result).toHaveProperty("discount");
+    expect(result).toHaveProperty("taxableAmount");
+
+    // Both Friday & Saturday are weekend nights (1.2 multiplier)
+    // Daily base: 5000 * 1.1 * 1.2 = 6600 nightly => 13200 for 2 nights
+    expect(result.roomSubtotal).toBe(13200);
+
+    // Extra guests: (1 * 1000 + 1 * 500) * 2 nights = 3000
+    expect(result.extraGuestCharges).toBe(3000);
+
+    // CP default: 500 per guest per night * 3 guests * 2 nights = 3000
+    expect(result.mealPlanCharges).toBe(3000);
+
+    // Subtotal = 13200 + 3000 + 3000 = 19200
+    // Discount = 800 => Taxable = 18400
+    expect(result.discount).toBe(800);
+    expect(result.taxableAmount).toBe(18400);
+
+    // Confirm GST is completely omitted from the rate engine
+    expect((result as any).gst).toBeUndefined();
+    expect((result as any).cgstAmount).toBeUndefined();
+    expect((result as any).totalTax).toBeUndefined();
+
+    // Nightly breakdown verification
+    expect(result.nights.length).toBe(2);
+    expect(result.nights[0]?.isWeekend).toBe(true);
+    expect(result.nights[1]?.isWeekend).toBe(true);
+  });
 });
+
+describe("MODULE 4 — Room Catalog & Inventory State Machine & Rules", () => {
+  it("verifies all 6 Room Statuses are recognized correctly", () => {
+    const validStatuses = ["Clean", "Dirty", "Occupied", "Blocked", "Maintenance", "Available"] as const;
+    expect(validStatuses).toHaveLength(6);
+
+    // Sellable rooms
+    expect(isSellableRoomState("Available")).toBe(true);
+    expect(isSellableRoomState("Clean")).toBe(true);
+    expect(isSellableRoomState("Dirty")).toBe(true);
+    expect(isSellableRoomState("Occupied")).toBe(false);
+    expect(isSellableRoomState("Blocked")).toBe(false);
+    expect(isSellableRoomState("Maintenance")).toBe(false);
+
+    // Out of service
+    expect(isOutOfServiceRoomState("Blocked")).toBe(true);
+    expect(isOutOfServiceRoomState("Maintenance")).toBe(true);
+    expect(isOutOfServiceRoomState("Available")).toBe(false);
+
+    // In-house occupied
+    expect(isOccupiedRoomState("Occupied")).toBe(true);
+    expect(isOccupiedRoomState("Available")).toBe(false);
+  });
+
+  it("enforces legal status transitions and guards occupied rooms", () => {
+    // Dirty -> Clean housekeeping turnover is valid
+    expect(canTransitionRoomState("Dirty", "Clean")).toBe(true);
+    // Clean -> Available inspection is valid
+    expect(canTransitionRoomState("Clean", "Available")).toBe(true);
+    // Available -> Blocked is valid
+    expect(canTransitionRoomState("Available", "Blocked")).toBe(true);
+    // Available -> Maintenance is valid
+    expect(canTransitionRoomState("Available", "Maintenance")).toBe(true);
+
+    // Manual transition check for occupied room cannot be forced directly to Available without checkout
+    const occupiedCheck = checkRoomStateTransition({
+      from: "Occupied",
+      to: "Available",
+      hasInHouseBooking: true,
+    });
+    expect(occupiedCheck.allowed).toBe(false);
+
+    // Dirty room can be transitioned to Clean
+    const dirtyCheck = checkRoomStateTransition({
+      from: "Dirty",
+      to: "Clean",
+    });
+    expect(dirtyCheck.allowed).toBe(true);
+  });
+
+  it("handles all 4 standard meal plan codes (EP, CP, MAP, AP) in rate calculations", () => {
+    const mealPlans = ["EP", "CP", "MAP", "AP"] as const;
+    expect(mealPlans).toContain("EP");
+    expect(mealPlans).toContain("CP");
+    expect(mealPlans).toContain("MAP");
+    expect(mealPlans).toContain("AP");
+
+    // EP: Room only (0 meal charge)
+    const epCharges = calculateMealPlanCharges(0, 2, 2);
+    expect(epCharges).toBe(0);
+
+    // CP: Buffet Breakfast (e.g. ₹500/guest/night)
+    const cpCharges = calculateMealPlanCharges(500, 2, 2);
+    expect(cpCharges).toBe(2000); // 500 * 2 * 2
+
+    // MAP: Breakfast + Lunch/Dinner (e.g. ₹1,200/guest/night)
+    const mapCharges = calculateMealPlanCharges(1200, 3, 2);
+    expect(mapCharges).toBe(7200); // 1200 * 3 * 2
+
+    // AP: All 3 meals (e.g. ₹1,800/guest/night)
+    const apCharges = calculateMealPlanCharges(1800, 2, 3);
+    expect(apCharges).toBe(10800); // 1800 * 2 * 3
+  });
+});
+

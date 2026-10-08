@@ -6,14 +6,17 @@ import {
   getCurrentBusinessDate,
   validatePreAuditChecklist,
 } from "../services/nightAuditService";
+import { actorId, requirePermission } from "../middleware/auth";
+import { validateBody } from "../middleware/validate";
+import { nightAuditRunSchema } from "../validation/schemas";
 
 export const nightAuditRouter = Router();
 
 // POST /api/night-audit/run - Execute 11-step Night Audit
-nightAuditRouter.post("/run", async (req, res, next) => {
+nightAuditRouter.post("/run", requirePermission("night-audit:run"), validateBody(nightAuditRunSchema), async (req, res, next) => {
   try {
-    const { hotelId, businessDate, userId } = req.body;
-    const result = await runNightAudit(hotelId, businessDate, userId);
+    const { hotelId, businessDate } = req.body;
+    const result = await runNightAudit(hotelId, businessDate, actorId(req));
     res.json({
       success: true,
       data: result,
@@ -35,7 +38,7 @@ nightAuditRouter.post("/run", async (req, res, next) => {
 });
 
 // GET /api/night-audit/performance - Hotel Performance Dashboard Metrics (Occupancy %, ADR, RevPAR, etc.)
-nightAuditRouter.get("/performance", async (req, res, next) => {
+nightAuditRouter.get("/performance", requirePermission("night-audit:run"), async (req, res, next) => {
   try {
     const hotelId = req.query.hotelId as string;
     const businessDate = req.query.businessDate as string;
@@ -47,7 +50,7 @@ nightAuditRouter.get("/performance", async (req, res, next) => {
 });
 
 // GET /api/night-audit/status - Current Business Date & Operational Readiness
-nightAuditRouter.get("/status", async (req, res, next) => {
+nightAuditRouter.get("/status", requirePermission("night-audit:run"), async (req, res, next) => {
   try {
     const hotelId = req.query.hotelId as string;
     const currentBusinessDate = await getCurrentBusinessDate(hotelId);
@@ -65,7 +68,7 @@ nightAuditRouter.get("/status", async (req, res, next) => {
 });
 
 // GET /api/night-audit/pre-check - Pre-Audit Checklist Validation
-nightAuditRouter.get("/pre-check", async (req, res, next) => {
+nightAuditRouter.get("/pre-check", requirePermission("night-audit:run"), async (req, res, next) => {
   try {
     const hotelId = req.query.hotelId as string;
     const businessDate = req.query.businessDate as string;
@@ -77,7 +80,7 @@ nightAuditRouter.get("/pre-check", async (req, res, next) => {
 });
 
 // GET /api/night-audit/history - List of previous Night Audit executions
-nightAuditRouter.get("/history", async (req, res, next) => {
+nightAuditRouter.get("/history", requirePermission("night-audit:run"), async (req, res, next) => {
   try {
     const hotelId = req.query.hotelId as string;
     const history = await getNightAuditHistory(hotelId);

@@ -1,5 +1,6 @@
 import { PrismaClient } from "@prisma/client";
 import { DEFAULT_HOTEL_INFO } from "@hotel/config";
+import { hashPassword } from "../src/security/passwords";
 
 const prisma = new PrismaClient();
 
@@ -192,20 +193,53 @@ async function main() {
     });
   }
 
-  // 7. Create Default Admin User
-  await prisma.user.upsert({
-    where: { email: "admin@grandrajwada.com" },
-    update: {},
-    create: {
-      hotelId: hotel.id,
-      name: "Front Desk Operations Manager",
+  // 7. Create Default Staff Users for Quick Login & Testing
+  const ADMIN_PASSWORD = "GrandRajwada@2026";
+  const staffPasswordHash = await hashPassword(ADMIN_PASSWORD);
+  const staffUsers = [
+    {
       email: "admin@grandrajwada.com",
-      password: "$argon2id$v=19$m=65536,t=3,p=4$dummyhashedpasswordforinit$sample",
-      role: "SuperAdmin",
+      name: "Aditya Pratap Singh (General Manager)",
+      role: "SuperAdmin" as const,
     },
-  });
+    {
+      email: "frontdesk@grandrajwada.com",
+      name: "Pooja Sharma (Front Desk Lead)",
+      role: "FrontDesk" as const,
+    },
+    {
+      email: "manager@grandrajwada.com",
+      name: "Vikramaditya Rathore (Revenue Mgr)",
+      role: "Manager" as const,
+    },
+    {
+      email: "accountant@grandrajwada.com",
+      name: "Suresh Kulkarni (Finance Head)",
+      role: "Accountant" as const,
+    },
+    {
+      email: "housekeeping@grandrajwada.com",
+      name: "Sunita Devi (Executive Housekeeper)",
+      role: "Housekeeping" as const,
+    },
+  ];
 
-  console.log("✓ Successfully seeded floors, rooms, rate plans, and admin user.");
+  for (const staff of staffUsers) {
+    await prisma.user.upsert({
+      where: { email: staff.email },
+      update: { password: staffPasswordHash, role: staff.role, isActive: true },
+      create: {
+        hotelId: hotel.id,
+        name: staff.name,
+        email: staff.email,
+        password: staffPasswordHash,
+        role: staff.role,
+        isActive: true,
+      },
+    });
+  }
+  console.log("✓ Seeded 5 staff users with Quick Login accounts (password: GrandRajwada@2026)");
+  console.log("✓ Successfully seeded floors, rooms, rate plans, and staff users.");
 }
 
 main()

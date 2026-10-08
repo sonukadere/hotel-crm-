@@ -1,11 +1,12 @@
 import { Router } from "express";
 import { getBedTypes, createBedType } from "../services/roomService";
 import { ApiResponse } from "@hotel/types";
+import { requirePermission } from "../middleware/auth";
 
 export const bedTypesRouter = Router();
 
 // GET /bed-types
-bedTypesRouter.get("/", async (_req, res, next) => {
+bedTypesRouter.get("/", requirePermission("room:read"), async (_req, res, next) => {
   try {
     const beds = await getBedTypes();
     const response: ApiResponse<typeof beds> = {
@@ -20,7 +21,7 @@ bedTypesRouter.get("/", async (_req, res, next) => {
 });
 
 // POST /bed-types
-bedTypesRouter.post("/", async (req, res, next) => {
+bedTypesRouter.post("/", requirePermission("room:write"), async (req, res, next) => {
   try {
     const created = await createBedType(req.body);
     res.status(201).json({

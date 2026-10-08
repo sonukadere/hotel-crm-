@@ -2,19 +2,7 @@ import { RateCalculationInput, RateCalculationResult, NightlyRateBreakdown } fro
 import { parseISODate, formatDateToISO, isWeekendNight } from "../dates";
 import { roundCurrency } from "../formatters";
 
-/**
- * Calculates effective daily room rate for a single night
- */
-export function calculateEffectiveDailyRate({
-  basePlanRate,
-  seasonalMultiplier = 1.0,
-  weekendMultiplier = 1.0,
-  extraAdults = 0,
-  extraChildren = 0,
-  extraAdultRatePerNight = 0,
-  extraChildRatePerNight = 0,
-  isWeekend = false,
-}: {
+export interface EffectiveDailyRateParams {
   basePlanRate: number;
   seasonalMultiplier?: number;
   weekendMultiplier?: number;
@@ -23,12 +11,56 @@ export function calculateEffectiveDailyRate({
   extraAdultRatePerNight?: number;
   extraChildRatePerNight?: number;
   isWeekend?: boolean;
-}): {
+}
+
+/**
+ * Calculates effective daily room rate for a single night
+ * Formula: (basePlanRate * seasonalMultiplier * weekendMultiplier) + (extraAdults * extraAdultRatePerNight) + (extraChildren * extraChildRatePerNight)
+ */
+export function calculateEffectiveDailyRate(
+  paramsOrBaseRate: EffectiveDailyRateParams | number,
+  maybeSeasonalMultiplier?: number,
+  maybeWeekendMultiplier?: number,
+  maybeExtraAdults?: number,
+  maybeExtraChildren?: number,
+  maybeExtraAdultRate?: number,
+  maybeExtraChildRate?: number,
+  maybeIsWeekend?: boolean,
+): {
   roomBaseNightly: number;
   extraAdultCharges: number;
   extraChildCharges: number;
   totalDailyRate: number;
 } {
+  let basePlanRate: number;
+  let seasonalMultiplier = 1.0;
+  let weekendMultiplier = 1.0;
+  let extraAdults = 0;
+  let extraChildren = 0;
+  let extraAdultRatePerNight = 0;
+  let extraChildRatePerNight = 0;
+  let isWeekend = false;
+
+  if (typeof paramsOrBaseRate === "number") {
+    basePlanRate = paramsOrBaseRate;
+    seasonalMultiplier = maybeSeasonalMultiplier ?? 1.0;
+    weekendMultiplier = maybeWeekendMultiplier ?? 1.0;
+    extraAdults = maybeExtraAdults ?? 0;
+    extraChildren = maybeExtraChildren ?? 0;
+    extraAdultRatePerNight = maybeExtraAdultRate ?? 0;
+    extraChildRatePerNight = maybeExtraChildRate ?? 0;
+    isWeekend = maybeIsWeekend ?? false;
+  } else {
+    basePlanRate = paramsOrBaseRate.basePlanRate;
+    seasonalMultiplier = paramsOrBaseRate.seasonalMultiplier ?? 1.0;
+    weekendMultiplier = paramsOrBaseRate.weekendMultiplier ?? 1.0;
+    extraAdults = paramsOrBaseRate.extraAdults ?? 0;
+    extraChildren = paramsOrBaseRate.extraChildren ?? 0;
+    extraAdultRatePerNight = paramsOrBaseRate.extraAdultRatePerNight ?? 0;
+    extraChildRatePerNight = paramsOrBaseRate.extraChildRatePerNight ?? 0;
+    isWeekend = paramsOrBaseRate.isWeekend ?? false;
+  }
+
   const activeWeekendMultiplier = isWeekend ? weekendMultiplier : 1.0;
   const roomBaseNightly = roundCurrency(
     basePlanRate * seasonalMultiplier * activeWeekendMultiplier,
@@ -115,7 +147,15 @@ export function calculateBookingSubtotal(input: RateCalculationInput): RateCalcu
   const extraChildren = Math.max(0, input.extraChildren ?? 0);
   const extraAdultRatePerNight = input.extraAdultRatePerNight ?? 0;
   const extraChildRatePerNight = input.extraChildRatePerNight ?? 0;
-  const mealPlanRate = input.mealPlanRatePerPersonPerNight ?? 0;
+  const defaultMealRates: Record<string, number> = {
+    EP: 0,
+    CP: 500,
+    MAP: 1200,
+    AP: 1800,
+  };
+  const mealPlanRate = input.mealPlanRatePerPersonPerNight !== undefined
+    ? input.mealPlanRatePerPersonPerNight
+    : (input.mealPlan ? (defaultMealRates[input.mealPlan] ?? 0) : 0);
   const totalGuests = (input.adultCount ?? 1) + (input.childCount ?? 0);
 
   const nights: NightlyRateBreakdown[] = [];
@@ -203,10 +243,11 @@ export function calculateBookingSubtotal(input: RateCalculationInput): RateCalcu
   const mealPlanCharges = roundCurrency(totalMealPlan);
 
   const rawSubtotal = roundCurrency(roomSubtotal + extraGuestCharges + mealPlanCharges);
+  const flatDiscount = input.discountFlat ?? input.discount ?? 0;
   const totalDiscount = calculateDiscount(
     rawSubtotal,
     input.discountPercent ?? 0,
-    input.discountFlat ?? 0,
+    flatDiscount,
   );
   const taxableAmount = calculateTaxableAmount(rawSubtotal, totalDiscount);
 
@@ -224,6 +265,7 @@ export function calculateBookingSubtotal(input: RateCalculationInput): RateCalcu
     extraGuestCharges,
     mealPlanCharges,
     totalDiscount,
+    discount: totalDiscount,
     taxableAmount,
   };
 }
